@@ -1,0 +1,9 @@
+/dumb_data
+/pubmed-dataset
+/weights
+/deep_event_mine/experiments
+/deep_event_mine/data
+.idea/
+__pycache__/
+runnn.py
+.DS_Store
