@@ -371,7 +371,6 @@ class DeepEM(nn.Module):
                 ev_preds = None
 
         else:
-            rel_preds = None
             ev_preds = None
 
         ner_out['terms'] = span_terms

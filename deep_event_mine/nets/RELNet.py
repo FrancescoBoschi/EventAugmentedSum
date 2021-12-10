@@ -57,7 +57,7 @@ class RELModel(nn.Module):
 
         return type_embeds
 
-    def pair_representation(self, ent_embeds, tr_ids, type_embeds):
+    def pair_representation(self, ent_embeds, type_embeds):
 
         pairs4class = torch.cat((ent_embeds, type_embeds), dim=2)
 
@@ -222,7 +222,7 @@ class RELModel(nn.Module):
         # v_t = [m_t;s_t] for triggers and v_a = [m_a;s_a] for entities
         # pair4class.shape (batch_size, max_span_labels*2, params['bert_dim'] * 3 + params['etype_dim']) e.g (16, 1694, 768*3 + 300)
         pairs4class, enttoks_type_embeds = self.pair_representation(
-            ent_embeds=batch_input['ent_embeds'], tr_ids=batch_input['tr_ids'],
+            ent_embeds=batch_input['ent_embeds'],
             type_embeds=type_embeds)
 
         # apparently doesn't change anything

@@ -354,14 +354,14 @@ def write_ev_2file(pred_output, pred_ents, result_dir, g_entity_ids_, params):
 
     if not os.path.exists(a2dir):
         os.makedirs(a2dir)
-    else:
-        os.system('rm ' + a2dir + '*.a2')
+    # else:
+    #     os.system('rm ' + a2dir + '*.a2')
 
     if not os.path.exists(anndir):
         os.makedirs(anndir)
-    else:
-        os.system('rm ' + anndir + '*.a2')
-        os.system('rm ' + anndir + '*.a1')
+    # else:
+    #     os.system('rm ' + anndir + '*.a2')
+    #     os.system('rm ' + anndir + '*.a1')
 
     # write event and triggers, (and entity: if predict both entity and trigger)
     for fid, preds in pred_output.items():

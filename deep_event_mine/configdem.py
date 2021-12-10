@@ -25,7 +25,7 @@ def read_test_data(test_data, params):
     return test_data, test_dataloader
 
 
-def config(config_file):
+def config(config_file, sentences0):
     config_path = 'deep_event_mine/configs/{}'.format(config_file)
 
     with open(config_path, 'r') as stream:
@@ -63,10 +63,8 @@ def config(config_file):
     if not os.path.exists(result_dir):
         os.makedirs(result_dir)
 
-    file_to_read = open("dumb_data/sssentences0.pickle", "rb")
-    ssentence0 = pickle.load(file_to_read)
     # process train data
-    train_data = prepdata.prep_input_data(pred_params['train_data'], parameters, sentences0=ssentence0)
+    train_data = prepdata.prep_input_data(pred_params['train_data'], parameters, sentences0=sentences0)
     nntrain_data, train_dataloader = read_test_data(train_data, parameters)
     nntrain_data['g_entity_ids_'] = train_data['g_entity_ids_']
 
