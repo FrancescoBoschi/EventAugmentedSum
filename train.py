@@ -1,6 +1,11 @@
 import argparse
-from tqdm import tqdm
 import itertools
+import networkx
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+
+from tqdm import tqdm
 from collections import defaultdict
 
 from deep_event_mine import configdem
@@ -10,55 +15,70 @@ from deep_event_mine.eval.evalEV import write_events
 from deep_event_mine.event_to_graph.standoff2graphs import get_graphs
 
 
-def embeddings_for_entities(all_ner_terms, all_ent_embs, fidss, feid_mapping):
-    entities_list = defaultdict(list)
+class DeepGraphMine(nn.Module):
+    def __init__(self):
+        super().__init__()
 
-    for bb, ner_terms in enumerate(all_ner_terms):
+    def pad_nodes_adjs(self, nodes_input, adjs_input):
 
-        for sent, ner_term in enumerate(ner_terms):
+        # max number of nodes
+        max_len = max([_input.size(0) for _input in nodes_input])
 
-            for index, i_d in ner_term[0].items():
-                if i_d in feid_mapping[fidss[bb][sent]]:
-                    node_emb = all_ent_embs[bb][sent][index]
-                    correct_index = feid_mapping[fidss[bb][sent]][i_d]
-                    entities_list[fidss[bb][sent]].append((sent, index, correct_index, node_emb))
+        nodes_output = []
+        adjs_output = []
+        for i, (node_input, adj_input) in enumerate(zip(nodes_input, adjs_input)):
+            nodes_output.append(F.pad(node_input, pad=(0, 0, 0, max_len - node_input.shape[0])))
+            adjs_output.append(F.pad(adj_input, pad=(0, max_len - node_input.shape[0], 0, max_len - node_input.shape[0])))
 
-    return entities_list
+        return nodes_input, adjs_output
 
+    def embeddings_for_entities(self, all_ner_terms, all_ent_embs, fidss, feid_mapping, a2_files_path):
 
-def get_range(dictionary, begin, end):
-    return dict(itertools.islice(dictionary.items(), begin, end))
+        # create a dictionary for each document in the batch
+        # where we store the node embedding for each entity
+        entities_dict = defaultdict(dict)
+        for bb, ner_terms in enumerate(all_ner_terms):
 
+            for sent, ner_term in enumerate(ner_terms):
 
-def dem_forward():
-    import pickle
-    file_to_read = open("dumb_data/sssentences0.pickle", "rb")
-    ssentence0 = pickle.load(file_to_read)
-    file_to_read = open("dumb_data/parameters.pickle", "rb")
-    parameters = pickle.load(file_to_read)
+                for index, i_d in ner_term[0].items():
+                    if i_d in feid_mapping[fidss[bb][sent]]:
+                        node_emb = all_ent_embs[bb][sent][index]
+                        correct_index = feid_mapping[fidss[bb][sent]][i_d]
+                        entities_dict[fidss[bb][sent]][correct_index] = (sent, index, node_emb)
 
-    ind_start = 0
-    ind_end = 20
+        # contains a graph for each document in the batch
+        # constructed using, events triggers and entities
+        all_graphs = get_graphs(a2_files_path)
 
-    deepee_model = deepEM.DeepEM(parameters)
+        init_nodes_vec = []
+        init_adjs = []
+        for doc_id, graph in all_graphs.items():
+            nodes_emb = [entities_dict[doc_id][node_id][2] for node_id in graph.nodes]
+            nodes_emb = torch.stack(nodes_emb)
+            init_nodes_vec.append(nodes_emb)
 
-    model_path = parameters['model_path']
-    device = parameters['device']
+            init_adjs.append(torch.from_numpy(networkx.adjacency_matrix(graph).todense()))
 
-    utils.handle_checkpoints(model=deepee_model,
-                             checkpoint_dir=model_path,
-                             params={
-                                 'device': device
-                             },
-                             resume=True)
+        init_nodes_vec, init_adjs = self.pad_nodes_adjs(init_nodes_vec, init_adjs)
+        batch_nodes_vec = torch.stack(init_nodes_vec, 0)
+        batch_adjs = torch.stack(init_adjs, 0)
 
-    deepee_model.to(device)
-
-    while ind_end < len(ssentence0):
-        print(f'ind_start: {ind_start} \t ind_end: {ind_end}')
-
-        sentence0 = get_range(ssentence0, ind_start, ind_end)
+    def forward(self):
         train_data, train_dataloader, parameters = configdem.config(args.configdem, sentence0)
+
+        deepee_model = deepEM.DeepEM(parameters)
+
+        model_path = parameters['model_path']
+        device = parameters['device']
+
+        utils.handle_checkpoints(model=deepee_model,
+                                 checkpoint_dir=model_path,
+                                 params={
+                                     'device': device
+                                 },
+                                 resume=True)
+        deepee_model.to(device)
 
         mapping_id_tag = parameters['mappings']['nn_mapping']['id_tag_mapping']
 
@@ -184,11 +204,10 @@ def dem_forward():
                                         params=parameters,
                                         result_dir=parameters['result_dir'])
 
-        ind_start += 20
-        ind_end += 20
-
-    entities_list = embeddings_for_entities(all_ner_terms, all_ent_embs, fidss, feid_mapping)
-    all_graphs = get_graphs(parameters['result_dir'] + 'ev-last/ev-tok-ann/')
+            a2_files_path = parameters['result_dir'] + 'ev-last/ev-tok-ann/'
+            entities_list = embeddings_for_entities(all_ner_terms, all_ent_embs, fidss, feid_mapping, a2_files_path)
+            all_graphs = get_graphs(parameters['result_dir'] + 'ev-last/ev-tok-ann/')
+            adj = torch.from_numpy(networkx.adjacency_matrix(all_graphs['PMC4042020']).todense())
 
 
 def main():
