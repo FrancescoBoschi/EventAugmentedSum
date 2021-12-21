@@ -58,15 +58,10 @@ class _CopyLinear(nn.Module):
 
 class CopySummIDGL(Seq2SeqSumm):
     def __init__(self, vocab_size, emb_dim,
-                 n_hidden, bidirectional, n_layer, side_dim, dropout=0.0, gat_args={},
-                 adj_type='no_edge', mask_type='none', feed_gold=False,
-                 graph_layer_num=1, copy_from_node=False, copy_bank='node',
-                 feature_banks=[], bert=False, bert_length=512, use_t5=False):
+                 n_hidden, bidirectional, n_layer, side_dim, dropout=0.0, bert=False, bert_length=512):
         super().__init__(vocab_size, emb_dim,
                          n_hidden, bidirectional, n_layer, dropout)
         self._bert = bert
-        self._use_t5 = use_t5
-        self._model_t5 = None
         if self._bert:
             self._bert_model = RobertaEmbedding()
             self._embedding = self._bert_model._embedding
@@ -77,39 +72,19 @@ class CopySummIDGL(Seq2SeqSumm):
                 emb_dim, n_hidden, n_layer,
                 bidirectional=bidirectional, dropout=dropout
             )
-            if self._use_t5:
-                self._projection = nn.Sequential(
-                    nn.Linear(n_hidden, n_hidden),
-                    nn.Tanh(),
-                    nn.Linear(n_hidden, emb_dim, bias=False)
-                )
-            else:
-                self._projection = nn.Sequential(
-                    nn.Linear(2 * n_hidden, n_hidden),
-                    nn.Tanh(),
-                    nn.Linear(n_hidden, emb_dim, bias=False)
-                )
+
+            self._projection = nn.Sequential(
+                nn.Linear(2 * n_hidden, n_hidden),
+                nn.Tanh(),
+                nn.Linear(n_hidden, emb_dim, bias=False)
+            )
             self._dec_lstm = MultiLayerLSTMCells(
                 emb_dim * 2, n_hidden, n_layer, dropout=dropout
             )
             # overlap between 2 lots to avoid breaking paragraph
             self._bert_stride = 256
 
-        if self._use_t5:
-            self._model_t5 = T5Model.from_pretrained('t5-small')
-            self._t5_emb = nn.Linear(in_features=768, out_features=512)
-
-            if copy_from_node:
-                self._copy = _CopyLinear(n_hidden, n_hidden, emb_dim, side_dim)
-            else:
-                self._copy = _CopyLinear(n_hidden, n_hidden, emb_dim, side_dim, side_dim)
-        else:
-            if copy_from_node:
-                self._copy = _CopyLinear(n_hidden, n_hidden, 2 * emb_dim, side_dim)
-            else:
-                self._copy = _CopyLinear(n_hidden, n_hidden, 2 * emb_dim, side_dim, side_dim)
-
-        self._feature_banks = feature_banks
+        self._copy = _CopyLinear(n_hidden, n_hidden, 2 * emb_dim, side_dim, side_dim)
 
         graph_hsz = n_hidden
 
@@ -130,39 +105,17 @@ class CopySummIDGL(Seq2SeqSumm):
         init.uniform_(self._attns_v, -INIT, INIT)
         self._graph_proj = nn.Linear(graph_hsz, graph_hsz)
 
-        if copy_from_node:
-            self._projection_decoder = nn.Sequential(
-                nn.Linear(4 * n_hidden, n_hidden),
-                nn.Tanh(),
-                nn.Linear(n_hidden, emb_dim, bias=False)
-            )
-        else:
-            self._projection_decoder = nn.Sequential(
-                nn.Linear(3 * n_hidden, n_hidden),
-                nn.Tanh(),
-                nn.Linear(n_hidden, emb_dim, bias=False)
-            )
+
+        self._projection_decoder = nn.Sequential(
+            nn.Linear(3 * n_hidden, n_hidden),
+            nn.Tanh(),
+            nn.Linear(n_hidden, emb_dim, bias=False)
+        )
         self._decoder_supervision = False
 
-        self._copy_from_node = copy_from_node
-        if self._copy_from_node:
-            self._attn_copyx = nn.Parameter(torch.Tensor(n_hidden, n_hidden))
-            self._attn_copyn = nn.Parameter(torch.Tensor(n_hidden, n_hidden))
-            self._attn_copyh = nn.Parameter(torch.Tensor(n_hidden, n_hidden))
-            self._attn_copyv = nn.Parameter(torch.Tensor(n_hidden))
-            init.xavier_normal_(self._attn_copyx)
-            init.xavier_normal_(self._attn_copyh)
-            init.xavier_normal_(self._attn_copyn)
-            init.uniform_(self._attn_copyv, -INIT, INIT)
-        else:
-            self._attn_copyx = None
-            self._attn_copyn = None
-            self._attn_copyh = None
-            self._attn_copyv = None
-
         self._decoder = CopyDecoderGAT(
-            self._copy, self._attn_s1, self._attns_wm, self._attns_wq, self._attn_v, copy_from_node,
-            self._attn_copyh, self._attn_copyv, self._use_t5, self._model_t5, None, None, False,
+            self._copy, self._attn_s1, self._attns_wm, self._attns_wq, self._attn_v,
+            self._attn_copyh, self._attn_copyv, None, None, False,
             self._embedding, self._dec_lstm, self._attn_wq, self._projection_decoder, self._attn_wb, self._attn_v,
         )
 
@@ -238,11 +191,6 @@ class CopySummIDGL(Seq2SeqSumm):
             self._init_enc_h.unsqueeze(1).expand(*size),
             self._init_enc_c.unsqueeze(1).expand(*size)
         )
-        feature_embeddings = {}
-        if 'freq' in self._feature_banks:
-            feature_embeddings['freq'] = self._freq_embedding
-        if 'inpara_freq' in self._feature_banks:
-            feature_embeddings['inpara_freq'] = self._inpara_embedding
 
         # e.g. self._bert_max_length=1024
         if self._bert_max_length > 512:
@@ -299,22 +247,16 @@ class CopySummIDGL(Seq2SeqSumm):
         # article = self._bert_relu(self._bert_linear(bert_hidden))
         article = bert_hidden
 
-        if self._use_t5:
-            # from (32, 775, 768) to (32, 775, 512)
-            article = self._t5_emb(article)
-            enc_art = self._model_t5.encoder(inputs_embeds=article).last_hidden_state
+        # enc_arts (max(art_lens), batch_size, 512) e.g. (775, 32, 512) each vector represents h_k of size 512
+        # final_states: tuple of size 2 with each element of size e.g. (2, 32, 256)
+        #               final_states[0] contains the final hidden states in both directions that's why we have a 2
+        #               final_states[1] contains the final cell states in both directions
+        enc_art, final_states = lstm_multiembedding_encoder(
+            article, self._enc_lstm, art_lens,
+            init_enc_states, None, {}, {}
+        )
 
-        else:
-            # enc_arts (max(art_lens), batch_size, 512) e.g. (775, 32, 512) each vector represents h_k of size 512
-            # final_states: tuple of size 2 with each element of size e.g. (2, 32, 256)
-            #               final_states[0] contains the final hidden states in both directions that's why we have a 2
-            #               final_states[1] contains the final cell states in both directions
-            enc_art, final_states = lstm_multiembedding_encoder(
-                article, self._enc_lstm, art_lens,
-                init_enc_states, None, {}, {}
-            )
-
-        if self._enc_lstm.bidirectional and not self._use_t5:
+        if self._enc_lstm.bidirectional:
             h, c = final_states
             # final_states: tuple of size 2 with each element of size e.g. (1, 32, 512)
             # basically we concatenate the final hidden and cell states from both direction
@@ -322,15 +264,6 @@ class CopySummIDGL(Seq2SeqSumm):
                 torch.cat(h.chunk(2, dim=0), dim=2),
                 torch.cat(c.chunk(2, dim=0), dim=2)
             )
-
-        if self._use_t5:
-            # self._attn_wm is of size e.g (512, 256) so we get from (775, 32, 512)
-            # to (775, 32, 256) and finally after transposing to (32, 775, 256)
-            # basically we perform W_6 * h_k
-            attention = torch.matmul(enc_art, self._attn_wm)
-            init_attn_out = self._projection(sequence_mean(attention, art_lens, dim=1))
-
-            return attention, (enc_art, init_attn_out)
 
         else:
             # in_features=512, out_features=256
@@ -370,10 +303,6 @@ class CopySummIDGL(Seq2SeqSumm):
             self._init_enc_c.unsqueeze(1).expand(*size)
         )
         feature_embeddings = {}
-        if 'freq' in self._feature_banks:
-            feature_embeddings['freq'] = self._freq_embedding
-        if 'inpara_freq' in self._feature_banks:
-            feature_embeddings['inpara_freq'] = self._inpara_embedding
 
         enc_art, final_states = lstm_multiembedding_encoder(
             article, self._enc_lstm, art_lens,
@@ -598,8 +527,6 @@ class CopySummIDGL(Seq2SeqSumm):
                            go, eos, unk, max_len, beam_size, diverse=1.0, min_len=35):
         (nodes, nmask, node_num, sw_mask, feature_dict) = ninfo
         (relations, rmask, triples, adjs) = rinfo
-        if self._copy_from_node:
-            (all_node_words, all_node_mask, ext_node_aligns, gold_copy_mask) = ext_ninfo
         if self._gold:
             sw_mask = sw_mask
         else:
@@ -618,45 +545,19 @@ class CopySummIDGL(Seq2SeqSumm):
             nodes = self._encode_graph(attention, nodes, nmask, relations, rmask, triples, adjs, node_num, sw_mask,
                                        nodefreq=feature_dict['node_freq'])
 
-        if self._copy_from_node:
-            batch_size = attention.size(0)
-            nnum = all_node_words.size(1)
-            d_word = attention.size(-1)
-            all_node_words = all_node_words.unsqueeze(2).expand(batch_size, nnum, d_word)
-            ext_node_words = attention.gather(1, all_node_words)
-            ext_node_words = ext_node_words * all_node_mask.unsqueeze(2)
-            ext_node_aligns = ext_node_aligns.unsqueeze(2).expand(batch_size, nnum, d_word)
-            ext_node_reps = nodes.gather(1, ext_node_aligns)
-            ext_node_words = torch.matmul(ext_node_words, self._attn_copyx)
-            ext_node_reps = torch.matmul(ext_node_reps, self._attn_copyn)
-            if self._copy_bank == 'gold':
-                ext_info = (ext_node_words, ext_node_reps, gold_copy_mask)
-            elif self._copy_bank == 'node':
-                ext_info = (ext_node_words, ext_node_reps, all_node_mask)
-            ext_info = ([ext_info[0][i, :, :] for i in range(batch_size)],
-                        [ext_info[1][i, :, :] for i in range(batch_size)],
-                        [ext_info[2][i, :] for i in range(batch_size)])
-        else:
-            ext_info = None
+        ext_info = None
 
         mask = len_mask(art_lens, attention.device).unsqueeze(-2)
         all_attention = (attention, mask, extend_art, extend_vsize)
         attention = all_attention
 
-        # go = 0
-        if self._use_t5:
-            states, _ = init_dec_states
-            all_beams = [bs.init_beam(go, states[i, :, :])
-                         for i in range(batch_size)]
+        # h size e.g. (1, 32, 256)
+        # prev size e.g. (3, 768)
+        (h, c), prev = init_dec_states
 
-        else:
-            # h size e.g. (1, 32, 256)
-            # prev size e.g. (3, 768)
-            (h, c), prev = init_dec_states
-
-            # list of length batch_size e.g. 32 where all the beam search initialisations are stored
-            all_beams = [bs.init_beam(go, hists=(h[:, i, :], c[:, i, :], prev[i]))
-                         for i in range(batch_size)]
+        # list of length batch_size e.g. 32 where all the beam search initialisations are stored
+        all_beams = [bs.init_beam(go, hists=(h[:, i, :], c[:, i, :], prev[i]))
+                     for i in range(batch_size)]
 
         max_node_num = max(node_num)
         if sw_mask is not None:
@@ -675,7 +576,7 @@ class CopySummIDGL(Seq2SeqSumm):
             # at the first step we just have 1 because we consider just the eos token
             # we don't have to store the top 5 most likely hypothesis
             for beam in filter(bool, all_beams):
-                token, states = bs.pack_beam(beam, article.device, use_t5=self._use_t5)
+                token, states = bs.pack_beam(beam, article.device, use_t5=False)
                 all_states.append(states)
 
                 toks.append(token)
@@ -684,22 +585,12 @@ class CopySummIDGL(Seq2SeqSumm):
             # mask tokens that are not in the vocabulary with the unk token
             token.masked_fill_(token >= vsize, unk)
 
-            if self._use_t5:
-                states = torch.stack([state for state in all_states], dim=2)
-
-                if t > 0:
-                    all_tokens_list.append(token.unsqueeze(0))
-                    all_tokens = torch.cat(all_tokens_list, dim=0)
-                else:
-                    all_tokens = token.unsqueeze(0)
-
-            else:
-                # states[0][0] contains the hidden states e.g. (1, 1, 32, 256) at t=0 and (1, 5, 32, 256) at t > 0
-                # states[0][1] contains the cell states e.g. (1, 1, 32, 256) at t=0 and (1, 5, 32, 256) at t > 0
-                # state[1] contains the prev_states e.g. (1, 32, 768) at t=0 and (5, 32, 768) at t > 0
-                states = ((torch.stack([h for (h, _), _ in all_states], dim=2),
-                           torch.stack([c for (_, c), _ in all_states], dim=2)),
-                          torch.stack([prev for _, prev in all_states], dim=1))
+            # states[0][0] contains the hidden states e.g. (1, 1, 32, 256) at t=0 and (1, 5, 32, 256) at t > 0
+            # states[0][1] contains the cell states e.g. (1, 1, 32, 256) at t=0 and (1, 5, 32, 256) at t > 0
+            # state[1] contains the prev_states e.g. (1, 32, 768) at t=0 and (5, 32, 768) at t > 0
+            states = ((torch.stack([h for (h, _), _ in all_states], dim=2),
+                       torch.stack([c for (_, c), _ in all_states], dim=2)),
+                      torch.stack([prev for _, prev in all_states], dim=1))
 
             filtered_nodes = torch.stack([all_nodes[i][0] for i, _beam in enumerate(all_beams) if _beam != []], dim=0)
             filtered_node_num = [all_nodes[i][1] for i, _beam in enumerate(all_beams) if _beam != []]
@@ -709,30 +600,18 @@ class CopySummIDGL(Seq2SeqSumm):
             else:
                 filtered_sw_mask = None
 
-            if self._copy_from_node:
-                filtered_ext_info = (
-                torch.stack([ext_info[0][i] for i, _beam in enumerate(all_beams) if _beam != []], dim=0),
-                torch.stack([ext_info[1][i] for i, _beam in enumerate(all_beams) if _beam != []], dim=0),
-                torch.stack([ext_info[2][i] for i, _beam in enumerate(all_beams) if _beam != []], dim=0))
-            else:
-                filtered_ext_info = None
+            filtered_ext_info = None
 
             if t < min_len:
                 force_not_stop = True
             else:
                 force_not_stop = False
 
-            if self._use_t5:
-                topk, lp, attn_score = self._decoder.topk_step(
-                    all_tokens, states, attention, beam_size, filtered_nodes, filtered_node_num,
-                    max_node_num=max_node_num, side_mask=filtered_sw_mask, force_not_stop=force_not_stop,
-                    filtered_ext_info=filtered_ext_info, eos=eos)
-            else:
-                topk, lp, states, attn_score = self._decoder.topk_step(
-                    token, states, attention, beam_size, filtered_nodes,
-                    filtered_node_num,
-                    max_node_num=max_node_num, side_mask=filtered_sw_mask, force_not_stop=force_not_stop,
-                    filtered_ext_info=filtered_ext_info, eos=eos)
+            topk, lp, states, attn_score = self._decoder.topk_step(
+                token, states, attention, beam_size, filtered_nodes,
+                filtered_node_num,
+                max_node_num=max_node_num, side_mask=filtered_sw_mask, force_not_stop=force_not_stop,
+                filtered_ext_info=filtered_ext_info, eos=eos)
 
             batch_i = 0
             for i, (beam, finished) in enumerate(zip(all_beams,
@@ -740,24 +619,15 @@ class CopySummIDGL(Seq2SeqSumm):
                 if not beam:
                     continue
 
-                if self._use_t5:
-                    finished, new_beam = bs.next_search_beam(
-                        beam, beam_size, finished, eos,
-                        topk[:, batch_i, :], lp[:, batch_i, :],
-                        states[:, :, batch_i, :],
-                        attn_score[:, batch_i, :],
-                        diverse
-                    )
-                else:
-                    finished, new_beam = bs.next_search_beam(
-                        beam, beam_size, finished, eos,
-                        topk[:, batch_i, :], lp[:, batch_i, :],
-                        (states[0][0][:, :, batch_i, :],
-                         states[0][1][:, :, batch_i, :],
-                         states[1][:, batch_i, :]),
-                        attn_score[:, batch_i, :],
-                        diverse
-                    )
+                finished, new_beam = bs.next_search_beam(
+                    beam, beam_size, finished, eos,
+                    topk[:, batch_i, :], lp[:, batch_i, :],
+                    (states[0][0][:, :, batch_i, :],
+                     states[0][1][:, :, batch_i, :],
+                     states[1][:, batch_i, :]),
+                    attn_score[:, batch_i, :],
+                    diverse
+                )
 
                 batch_i += 1
                 if len(finished) >= beam_size:
@@ -794,8 +664,7 @@ class CopySummIDGL(Seq2SeqSumm):
 
 
 class CopyDecoderGAT(AttentionalLSTMDecoder):
-    def __init__(self, copy, attn_s1, attns_wm, attns_wq, attns_v,
-                 copy_from_node, attn_copyh=None, attn_copyv=None, use_t5=False, model_t5=None,
+    def __init__(self, copy, attn_s1, attns_wm, attns_wq, attns_v, attn_copyh=None, attn_copyv=None,
                  para_wm=None, para_v=None, hierarchical_attention=False, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self._copy = copy
@@ -805,14 +674,7 @@ class CopyDecoderGAT(AttentionalLSTMDecoder):
         self._attns_v = attns_v
         self._attn_copyh = attn_copyh
         self._attn_copyv = attn_copyv
-        self._copy_from_node = copy_from_node
-        self._use_t5 = use_t5
-        self._model_t5 = model_t5
         self.device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
-
-        if self._use_t5:
-            self._t5_emb = nn.Linear(in_features=768, out_features=512).to(self.device)
-            self._t5_dec_w = nn.Linear(in_features=512, out_features=256).to(self.device)
 
         self._hierarchical_attn = hierarchical_attention
         if self._hierarchical_attn:
@@ -827,21 +689,12 @@ class CopyDecoderGAT(AttentionalLSTMDecoder):
         states = init_states
         logits = []
         score_ns = []
-        if self._use_t5:
-            target_embeddings = self._embedding(target)
-            target_embeddings_t5 = self._t5_emb(target_embeddings)
-            state_t5 = self._model_t5.decoder(inputs_embeds=target_embeddings_t5,
-                                              encoder_hidden_states=states[0]).last_hidden_state
 
         # loop over all
         for i in range(max_len):
 
-            if self._use_t5:
-                tok = state_t5[:, i, :]
-                target_embedding_i = target_embeddings[:, i, :]
-            else:
-                tok = target[:, i:i + 1]
-                target_embedding_i = None
+            tok = target[:, i:i + 1]
+            target_embedding_i = None
 
             # target token index for each document e.g. [0, 12, ....] (32, 1)
             logit, states, _, score_n, out_attns = self._step(tok, attention, nodes, node_num, states,
@@ -860,43 +713,32 @@ class CopyDecoderGAT(AttentionalLSTMDecoder):
 
         out_attentions = {}
 
-        if self._use_t5:
-            decoder_in = target_embedding_i
-            decoder_out = self._t5_dec_w(tok)
 
-        else:
-            # (32, 768)
-            # prev_out  basically it's the concatenation of the final hidden state
-            # and the average of all the token embeddings W_6 * h_k in the article
-            prev_states, prev_out = states
+        # (32, 768)
+        # prev_out  basically it's the concatenation of the final hidden state
+        # and the average of all the token embeddings W_6 * h_k in the article
+        prev_states, prev_out = states
 
-            # self._embedding(tok).squeeze(1) gets the target token embeddings given by Roberta e.g. (32, 768)
-            # lstm has size e.g. (32, 1536) where 1536 is given by the concatenation of 2 768-dimensional embeddings
-            decoder_in = torch.cat(
-                [self._embedding(tok).squeeze(1), prev_out],
-                dim=1)
+        # self._embedding(tok).squeeze(1) gets the target token embeddings given by Roberta e.g. (32, 768)
+        # lstm has size e.g. (32, 1536) where 1536 is given by the concatenation of 2 768-dimensional embeddings
+        decoder_in = torch.cat(
+            [self._embedding(tok).squeeze(1), prev_out],
+            dim=1)
 
-            # decoder_in the input x of the LSTM cell
-            # prev_states[0] contains the last hidden state
-            # prev_states[1] contains the last cell state
-            states = self._lstm(decoder_in, prev_states)
+        # decoder_in the input x of the LSTM cell
+        # prev_states[0] contains the last hidden state
+        # prev_states[1] contains the last cell state
+        states = self._lstm(decoder_in, prev_states)
 
-            # we save the last layer state, by default we just have 1 layer so we just
-            # get the first and last state
-            # state[0] e.g. (1, 32, 256) ---> decoder_out (32, 256)
-            # decoder_out stores the 32 s_t hidden states, 1 for each document
-            decoder_out = states[0][-1]
+        # we save the last layer state, by default we just have 1 layer so we just
+        # get the first and last state
+        # state[0] e.g. (1, 32, 256) ---> decoder_out (32, 256)
+        # decoder_out stores the 32 s_t hidden states, 1 for each document
+        decoder_out = states[0][-1]
 
         # W_5 * s_t e.g. (32, 256)
         query = torch.mm(decoder_out, self._attn_w)
         attention, attn_mask, extend_src, extend_vsize = attention
-        if self._copy_from_node:
-            ext_node_words, ext_node_reps, all_node_mask = ext_info
-            query_copy = torch.matmul(decoder_out, self._attn_copyh)
-            context_node, score_copy = copy_from_node_attention(query_copy, ext_node_words, ext_node_reps,
-                                                                ext_node_words,
-                                                                mem_mask=all_node_mask.unsqueeze(-2),
-                                                                v=self._attn_copyv)
 
         # nodes attention
         if self._hierarchical_attn:
@@ -942,27 +784,20 @@ class CopyDecoderGAT(AttentionalLSTMDecoder):
             query, attention, attention, mem_mask=attn_mask, bias=self._attn_b, v=self._attn_v, side=side_n)
         out_attentions['word_attention'] = score.detach()
 
-        if self._copy_from_node:
-            dec_out = self._projection(torch.cat([decoder_out, context, side_n, context_node], dim=1))
-        else:
-            # self._projection applies an hyperplane 768*256,
-            # a tanh activation function and another hyperplane 256*768
-            # dec_out is of size (32, 768), it's going to be used also as prev_out
-            # at the next step
-            # torch.cat([decoder_out, context, side_n] = [s_t|c_t|c_t^v]
-            dec_out = self._projection(torch.cat([decoder_out, context, side_n], dim=1))
-            score_copy = score
+        # self._projection applies an hyperplane 768*256,
+        # a tanh activation function and another hyperplane 256*768
+        # dec_out is of size (32, 768), it's going to be used also as prev_out
+        # at the next step
+        # torch.cat([decoder_out, context, side_n] = [s_t|c_t|c_t^v]
+        dec_out = self._projection(torch.cat([decoder_out, context, side_n], dim=1))
+        score_copy = score
 
         # extend generation prob to extended vocabulary
         # softmax(W_out * [s_t|c_t|c_t^v])
         gen_prob = self._compute_gen_prob(dec_out, extend_vsize)
 
-        # compute the probabilty of each copying
-        if self._copy_from_node:
-            copy_prob = torch.sigmoid(self._copy(context, decoder_out, decoder_in, side_n, context_node))
-        else:
-            # P_copy = σ(W_copy[s_t|c_t|c_t^v|y_t−1]) e.g. (32, 1)
-            copy_prob = torch.sigmoid(self._copy(context, decoder_out, decoder_in, side_n))
+        # P_copy = σ(W_copy[s_t|c_t|c_t^v|y_t−1]) e.g. (32, 1)
+        copy_prob = torch.sigmoid(self._copy(context, decoder_out, decoder_in, side_n))
         # add the copy prob to existing vocab distribution
 
         lp = torch.log(
@@ -974,17 +809,10 @@ class CopyDecoderGAT(AttentionalLSTMDecoder):
             ) + 1e-10)  # numerical stability for log
 
         if output_attn:
-            if self._use_t5:
-                return lp, None, score, score_n, out_attentions
+            return lp, (states, dec_out), score, score_n, out_attentions
 
-            else:
-                return lp, (states, dec_out), score, score_n, out_attentions
         else:
-            if self._use_t5:
-                return lp, None, score, score_n
-
-            else:
-                return lp, (states, dec_out), score, score_n
+            return lp, (states, dec_out), score, score_n
 
     def decode_step(self, tok, states, attention, nodes, node_num, side_mask=None, output_attn=False, ext_info=None,
                     paras=None):
@@ -1010,47 +838,28 @@ class CopyDecoderGAT(AttentionalLSTMDecoder):
         """tok:[BB, B], states ([L, BB, B, D]*2, [BB, B, D])"""
         out_attentions = {}
 
-        if self._use_t5:
-            encoder_states = states
+        # h size (1, beam_size, batch_size, 256) e.g. (1, 5, 3, 256) for t > 0
+        (h, c), prev_out = states
 
-            # t5 is not beamable
-            nl, _, _, d = encoder_states.size()
-            curr_len, beam, batch = tok.size()
+        # lstm is not beamable
+        nl, _, _, d = h.size()
 
-            decoder_in = self._embedding(tok)
-            tok_embedding_t5 = self._t5_emb(decoder_in.contiguous().view(beam * batch, curr_len, -1))
-            encoder_states = encoder_states.view(beam * batch, nl, d)
-            states = self._model_t5.decoder(inputs_embeds=tok_embedding_t5,
-                                            encoder_hidden_states=encoder_states).last_hidden_state
+        # beam = 1 at t = 0, 5 else
+        beam, batch = tok.size()
+        decoder_in = torch.cat(
+            [self._embedding(tok), prev_out], dim=-1)
 
-            states = states[:, -1, :].contiguous().view(beam, batch, -1)
-            states = self._t5_dec_w(states)
-            decoder_out = states
-            decoder_in = decoder_in[-1, :, :, :]
+        # (beam * batch, 768) e.g. (15, 768) for t > 0
+        lstm_in = decoder_in.contiguous().view(beam * batch, -1)
+        prev_states = (h.contiguous().view(nl, -1, d),
+                       c.contiguous().view(nl, -1, d))
 
-        else:
-            # h size (1, beam_size, batch_size, 256) e.g. (1, 5, 3, 256) for t > 0
-            (h, c), prev_out = states
+        # h size is (1, beam_size*batch_size, 256) e.g. (1, 15, 256)
+        h, c = self._lstm(lstm_in, prev_states)
+        states = (h.contiguous().view(nl, beam, batch, -1),
+                  c.contiguous().view(nl, beam, batch, -1))
 
-            # lstm is not beamable
-            nl, _, _, d = h.size()
-
-            # beam = 1 at t = 0, 5 else
-            beam, batch = tok.size()
-            decoder_in = torch.cat(
-                [self._embedding(tok), prev_out], dim=-1)
-
-            # (beam * batch, 768) e.g. (15, 768) for t > 0
-            lstm_in = decoder_in.contiguous().view(beam * batch, -1)
-            prev_states = (h.contiguous().view(nl, -1, d),
-                           c.contiguous().view(nl, -1, d))
-
-            # h size is (1, beam_size*batch_size, 256) e.g. (1, 15, 256)
-            h, c = self._lstm(lstm_in, prev_states)
-            states = (h.contiguous().view(nl, beam, batch, -1),
-                      c.contiguous().view(nl, beam, batch, -1))
-
-            decoder_out = states[0][-1]
+        decoder_out = states[0][-1]
 
         query = torch.matmul(decoder_out, self._attn_w)
         attention, attn_mask, extend_src, extend_vsize = attention
@@ -1079,14 +888,6 @@ class CopyDecoderGAT(AttentionalLSTMDecoder):
             else:
                 side_n, score_n = badanau_attention(query_s, nodes, nodes, mem_mask=nmask, v=self._attns_v)
 
-        if self._copy_from_node:
-            ext_node_words, ext_node_reps, all_node_mask = filtered_ext_info
-            query_copy = torch.matmul(decoder_out, self._attn_copyh)
-            context_node, score_copy = copy_from_node_attention(query_copy, ext_node_words, ext_node_reps,
-                                                                ext_node_words,
-                                                                mem_mask=all_node_mask.unsqueeze(-2),
-                                                                v=self._attn_copyv)
-
         out_attentions['node_attention'] = score_n.detach()
         side_n = torch.matmul(side_n, self._attn_s1)
 
@@ -1094,22 +895,16 @@ class CopyDecoderGAT(AttentionalLSTMDecoder):
 
         context, score = badanau_attention(
             query, attention, attention, mem_mask=attn_mask, bias=self._attn_b, v=self._attn_v, side=side_n)
-        if self._copy_from_node:
-            dec_out = self._projection(torch.cat([decoder_out, context, side_n, context_node], dim=-1))
-        else:
-            dec_out = self._projection(torch.cat([decoder_out, context, side_n], dim=-1))
-            score_copy = score
+
+        dec_out = self._projection(torch.cat([decoder_out, context, side_n], dim=-1))
+        score_copy = score
         # dec_out = self._projection(torch.cat([lstm_out, context, side_n], dim=-1))
 
         # copy mechanism is not beamable
         gen_prob = self._compute_gen_prob(
             dec_out.contiguous().view(batch * beam, -1), extend_vsize)
 
-        if self._copy_from_node:
-            copy_prob = torch.sigmoid(
-                self._copy(context, decoder_out, decoder_in, side_n, context_node)).contiguous().view(-1, 1)
-        else:
-            copy_prob = torch.sigmoid(self._copy(context, decoder_out, decoder_in, side_n)).contiguous().view(-1, 1)
+        copy_prob = torch.sigmoid(self._copy(context, decoder_out, decoder_in, side_n)).contiguous().view(-1, 1)
         # copy_prob = torch.sigmoid(
         #     self._copy(context, lstm_out, lstm_in_beamable, side_n)
         # ).contiguous().view(-1, 1)
@@ -1126,10 +921,7 @@ class CopyDecoderGAT(AttentionalLSTMDecoder):
 
         k_lp, k_tok = lp.topk(k=k, dim=-1)
 
-        if self._use_t5:
-            return k_tok, k_lp, score_copy
-        else:
-            return k_tok, k_lp, (states, dec_out), score_copy
+        return k_tok, k_lp, (states, dec_out), score_copy
 
     def _compute_gen_prob(self, dec_out, extend_vsize, eps=1e-6):
 
