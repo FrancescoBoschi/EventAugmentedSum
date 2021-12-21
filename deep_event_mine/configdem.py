@@ -25,7 +25,7 @@ def read_test_data(test_data, params):
     return test_data, test_dataloader
 
 
-def config(config_file, sentences0):
+def config(config_file):
     config_path = 'deep_event_mine/configs/{}'.format(config_file)
 
     with open(config_path, 'r') as stream:
@@ -59,14 +59,5 @@ def config(config_file, sentences0):
     parameters['compute_dem_loss'] = pred_params['compute_dem_loss']
     parameters['a2_entities'] = pred_params['a2_entities']
 
-    result_dir = pred_params['result_dir']
-    if not os.path.exists(result_dir):
-        os.makedirs(result_dir)
-
-    # process train data
-    train_data = prepdata.prep_input_data(pred_params['train_data'], parameters, sentences0=sentences0)
-    nntrain_data, train_dataloader = read_test_data(train_data, parameters)
-    nntrain_data['g_entity_ids_'] = train_data['g_entity_ids_']
-
-    return nntrain_data, train_dataloader, parameters,
+    return pred_params, parameters,
 

@@ -276,12 +276,9 @@ class BasicPipeline(object):
         #self._net.zero_grad()
         fw_args, bw_args = next(self._batches)
 
-        import pickle
-        file_to_store = open("stored_object.pickle", "wb")
-        pickle.dump((fw_args, bw_args), file_to_store)
-        ssentence0 = OrderedDict()
+        sentences = OrderedDict()
         for art, article_id in enumerate(fw_args[6]):
-            ssentence0[article_id] = fw_args[5][art]
+            sentences[article_id] = fw_args[5][art]
 
         net_out = self._net(*fw_args)
 

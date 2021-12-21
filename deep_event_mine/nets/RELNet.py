@@ -18,7 +18,7 @@ class RELModel(nn.Module):
         super(RELModel, self).__init__()
 
         # num_embeddings=59 because we have 58 entities + the non-entity label
-        # we define the type_embedding to gave 300 dimensions
+        # we define the type_embedding to have 300 dimensions
         # 58 is the index relating to the ignore label
         self.type_embed = nn.Embedding(num_embeddings=sizes['etype_size'] + 1,
                                        embedding_dim=params['etype_dim'],
