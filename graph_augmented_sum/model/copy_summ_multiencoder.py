@@ -6,7 +6,7 @@ from transformers import T5Model
 
 from graph_augmented_sum.data.batcher import pad_batch_tensorize
 from .attention import step_attention, badanau_attention, copy_from_node_attention, hierarchical_attention
-from .util import len_mask, sequence_mean
+from .util import len_mask, sequence_mean, sequence_loss
 from .summ import Seq2SeqSumm, AttentionalLSTMDecoder
 from . import beam_search as bs
 from graph_augmented_sum.utils import PAD, UNK, START, END
@@ -56,7 +56,7 @@ class _CopyLinear(nn.Module):
         return output
 
 
-class CopySummGAT(Seq2SeqSumm):
+class CopySummIDGL(Seq2SeqSumm):
     def __init__(self, vocab_size, emb_dim,
                  n_hidden, bidirectional, n_layer, side_dim, dropout=0.0, gat_args={},
                  adj_type='no_edge', mask_type='none', feed_gold=False,
@@ -67,7 +67,6 @@ class CopySummGAT(Seq2SeqSumm):
         self._bert = bert
         self._use_t5 = use_t5
         self._model_t5 = None
-        feat_emb_dim = emb_dim // 4
         if self._bert:
             self._bert_model = RobertaEmbedding()
             self._embedding = self._bert_model._embedding
@@ -113,34 +112,8 @@ class CopySummGAT(Seq2SeqSumm):
         self._feature_banks = feature_banks
 
         graph_hsz = n_hidden
-        if 'nodefreq' in self._feature_banks:
-            graph_hsz += feat_emb_dim
-            self._node_freq_embedding = nn.Embedding(MAX_FREQ, feat_emb_dim, padding_idx=0)
-        gat_args['graph_hsz'] = graph_hsz
-        self._graph_layer_num = graph_layer_num
-        self._graph_enc = nn.ModuleList([gat_encode(gat_args) for _ in range(self._graph_layer_num)])
-        self._node_enc = MeanSentEncoder()
-
-        if feed_gold or mask_type == 'encoder':
-            self._graph_mask = node_mask(mask_type='gold')
-        elif mask_type == 'soft':
-            self._graph_mask = nn.ModuleList(
-                [node_mask(mask_type=mask_type, emb_dim=graph_hsz * (i + 1)) for i in range(self._graph_layer_num + 1)])
-        else:
-            self._graph_mask = node_mask(mask_type='none')
-
-        self._gold = feed_gold
-        self._adj_type = adj_type
-        self._mask_type = mask_type
-        self._copy_bank = copy_bank
 
         enc_lstm_in_dim = emb_dim
-        if 'freq' in self._feature_banks:
-            enc_lstm_in_dim += feat_emb_dim
-            self._freq_embedding = nn.Embedding(MAX_FREQ, feat_emb_dim, padding_idx=0)
-        if 'inpara_freq' in self._feature_banks:
-            enc_lstm_in_dim += feat_emb_dim
-            self._inpara_embedding = nn.Embedding(MAX_FREQ, feat_emb_dim, padding_idx=0)
         self._enc_lstm = nn.LSTM(
             enc_lstm_in_dim, n_hidden, n_layer,
             bidirectional=bidirectional, dropout=dropout
@@ -193,7 +166,7 @@ class CopySummGAT(Seq2SeqSumm):
             self._embedding, self._dec_lstm, self._attn_wq, self._projection_decoder, self._attn_wb, self._attn_v,
         )
 
-    def forward(self, article, art_lens, abstract, extend_art, extend_vsize, ninfo, rinfo, ext_ninfo=None):
+    def forward(self, artinfo, absinfo, node_vec, node_num):
         """
         - article: Tensor of size (n_split_docs, 512) where n_split_docs doesn't correspond to the number of documents
                    involved, but to the number of lots of tokens necessary to represent the original articles. E.g. when
@@ -208,33 +181,10 @@ class CopySummGAT(Seq2SeqSumm):
                       padded to the maximum number of tokens in an article e.g (32, 745)
 
         - extend_vsize: highest value for a token index
-
-        - ninfo: information about nodes:
-                 ninfo[0]: size (batch_size, max(ninfo[2]), max_words_node) where max_words_node is the max
-                           number of tokens of a node. e.g (32, 31, 20). Each element represents a word position in the
-                           original article
-                 ninfo[1]: size (batch_size, max(n_nodes), max(max_words_node)), basically is the mask that filters out
-                           padded tokens (tokens with id 0)
-                 ninfo[2]: batch_size-dimensional list of number of nodes and edges (if adj_type == 'edge_as_node') in
-                           each article [31, 28, ....]
-                 ninfo[3]: sum_worthy
-                 ninfo[4]: number of aliases for each node, e.g 'the players' can also be expressed as 'they' so the number
-                           of aliases is equal to 2. size (batch_size, max(ninfo[2])) e.g (32, 31)
-
-        -rinfo: information about edges:
-                rinfo[0]: size (batch_size, max(num_edges), max(max_words_edge)) e.g (32, 13, 4). Each element represent a
-                          word position in the original article
-                rinfo[1]: size (batch_size, max(num_edges), max(max_words_edge)). the mask that filters out
-                          padded tokens (tokens with id 0)
-                rinfo[2]: batch_size-dimensional list of lists where each element represents a triplet
-                rinfo[3]: batch_size-dimensional list where each element is of size (ninfo[2][i], ninfo[2][i]) e.g. (31, 31).
-                          each element represent an Adjacency matrix
         """
 
-        (nodes, nmask, node_num, sw_mask, feature_dict) = ninfo
-        (relations, rmask, triples, adjs) = rinfo
-        if self._copy_from_node:
-            (all_node_words, all_node_mask, ext_node_aligns, gold_copy_mask) = ext_ninfo
+        article, art_lens, extend_art, extend_vsize = artinfo
+        abstract, target = absinfo
 
         # attention: contains the W_6 * h_k vectors (32, 775, 256)
         # init_dec_states[0]][0]: final hidden state ready for the decoder single-layer unidirectional LSTM
@@ -243,42 +193,10 @@ class CopySummGAT(Seq2SeqSumm):
         # as the feature embeddings of the decoder single-layer unidirectional LSTM
         # basically it's the concatenation of the final hidden state and the average of all
         # the token embeddings W_6 * h_k in the article e.g. (32, 768)
-        attention, init_dec_states = self.encode(article, feature_dict, art_lens)
+        attention, init_dec_states = self.encode(article, art_lens)
 
-        if self._gold:
-            sw_mask = sw_mask
-        else:
-            sw_mask = None
-
-        if self._mask_type == 'soft' or self._mask_type == 'none':
-
-            # nodes: contains the v_i^ representations e.g. (32, 45, 256)
-            # masks: list where each element contains all the m_i^ e.g. (32, 45)
-            #        we have a list because we can have multiple layers
-            nodes, masks = self._encode_graph(attention, nodes, nmask, relations,
-                                              rmask, triples, adjs, node_num, node_mask=None,
-                                              nodefreq=feature_dict['node_freq'])
-        else:
-            nodes = self._encode_graph(attention, nodes, nmask, relations, rmask, triples, adjs, node_num, sw_mask,
-                                       nodefreq=feature_dict['node_freq'])
-
-        if self._copy_from_node:
-            bs = attention.size(0)
-            nnum = all_node_words.size(1)
-            d_word = attention.size(-1)
-            all_node_words = all_node_words.unsqueeze(2).expand(bs, nnum, d_word)
-            ext_node_words = attention.gather(1, all_node_words)
-            ext_node_words = ext_node_words * all_node_mask.unsqueeze(2)
-            ext_node_aligns = ext_node_aligns.unsqueeze(2).expand(bs, nnum, d_word)
-            ext_node_reps = nodes.gather(1, ext_node_aligns)
-            ext_node_words = torch.matmul(ext_node_words, self._attn_copyx)
-            ext_node_reps = torch.matmul(ext_node_reps, self._attn_copyn)
-            if self._copy_bank == 'gold':
-                ext_info = (ext_node_words, ext_node_reps, gold_copy_mask)
-            elif self._copy_bank == 'node':
-                ext_info = (ext_node_words, ext_node_reps, all_node_mask)
-        else:
-            ext_info = None
+        sw_mask = None
+        ext_info = None
 
         mask = len_mask(art_lens, attention.device).unsqueeze(-2)
 
@@ -287,19 +205,19 @@ class CopySummGAT(Seq2SeqSumm):
         logit, selections = self._decoder(
             (attention, mask, extend_art, extend_vsize),
             abstract,
-            nodes,
+            node_vec,
             node_num,
             init_dec_states,
             sw_mask,
             ext_info
         )
-        logit = (logit,)
-        if 'soft' in self._mask_type:
-            logit += (masks,)
 
-        return logit
+        nll = lambda logit, target: F.nll_loss(logit, target, reduce=False)
+        loss = sequence_loss(logit, target, nll, pad_idx=PAD).mean()
 
-    def encode(self, article, feature_dict, art_lens=None):
+        return loss
+
+    def encode(self, article, art_lens=None):
 
         # We employ LSTM models with 256-dimensional
         # hidden states for the document encoder (128 each
@@ -325,88 +243,76 @@ class CopySummGAT(Seq2SeqSumm):
             feature_embeddings['freq'] = self._freq_embedding
         if 'inpara_freq' in self._feature_banks:
             feature_embeddings['inpara_freq'] = self._inpara_embedding
-        if self._bert:
-            # e.g. self._bert_max_length=1024
-            if self._bert_max_length > 512:
-                source_nums = art_lens
 
-            # no finetuning Roberta weights
-            with torch.no_grad():
-                # bert_out[0] (n_split_docs, 512, 768) contains token embeddings
-                # bert_out[1] (n_split_docs, 768) contains sentence embeddings
-                bert_out = self._bert_model(article)
+        # e.g. self._bert_max_length=1024
+        if self._bert_max_length > 512:
+            source_nums = art_lens
 
-            # e.g. (n_split_docs, 512, 768) so we obtain an embedding for each token
-            # in the 'lots'
-            bert_hidden = bert_out[0]
-            if self._bert_max_length > 512:
-                # e.g. 768
-                hsz = bert_hidden.size(2)
-                batch_id = 0
+        # no finetuning Roberta weights
+        with torch.no_grad():
+            # bert_out[0] (n_split_docs, 512, 768) contains token embeddings
+            # bert_out[1] (n_split_docs, 768) contains sentence embeddings
+            bert_out = self._bert_model(article)
 
-                # max(art_lens) e.g 775
-                max_source = max(source_nums)
+        # e.g. (n_split_docs, 512, 768) so we obtain an embedding for each token
+        # in the 'lots'
+        bert_hidden = bert_out[0]
+        if self._bert_max_length > 512:
+            # e.g. 768
+            hsz = bert_hidden.size(2)
+            batch_id = 0
 
-                bert_hiddens = []
-                # e.g. 512
-                max_len = bert_hidden.size(1)
-                for source_num in source_nums:
-                    # tensor of zeros of size (max(art_lens), 768) e.g. (775, 768)
-                    source = torch.zeros(max_source, hsz).to(bert_hidden.device)
-                    if source_num < BERT_MAX_LEN:
-                        source[:source_num, :] += bert_hidden[batch_id, :source_num, :]
+            # max(art_lens) e.g 775
+            max_source = max(source_nums)
+
+            bert_hiddens = []
+            # e.g. 512
+            max_len = bert_hidden.size(1)
+            for source_num in source_nums:
+                # tensor of zeros of size (max(art_lens), 768) e.g. (775, 768)
+                source = torch.zeros(max_source, hsz).to(bert_hidden.device)
+                if source_num < BERT_MAX_LEN:
+                    source[:source_num, :] += bert_hidden[batch_id, :source_num, :]
+                    batch_id += 1
+                else:
+                    # fill the first 512 tokens of the article
+                    source[:BERT_MAX_LEN, :] += bert_hidden[batch_id, :BERT_MAX_LEN, :]
+                    batch_id += 1
+                    start = BERT_MAX_LEN
+                    # now we deal with the remaining  source_num - BERT_MAX_LEN tokens e.g. 745 - 212
+                    while start < source_num:
+                        # print(start, source_num, max_source)
+                        if start - self._bert_stride + BERT_MAX_LEN < source_num:
+                            end = start - self._bert_stride + BERT_MAX_LEN
+                            batch_end = BERT_MAX_LEN
+                        else:
+                            end = source_num
+                            batch_end = source_num - start + self._bert_stride
+                        source[start:end, :] += bert_hidden[batch_id, self._bert_stride:batch_end, :]
                         batch_id += 1
-                    else:
-                        # fill the first 512 tokens of the article
-                        source[:BERT_MAX_LEN, :] += bert_hidden[batch_id, :BERT_MAX_LEN, :]
-                        batch_id += 1
-                        start = BERT_MAX_LEN
-                        # now we deal with the remaining  source_num - BERT_MAX_LEN tokens e.g. 745 - 212
-                        while start < source_num:
-                            # print(start, source_num, max_source)
-                            if start - self._bert_stride + BERT_MAX_LEN < source_num:
-                                end = start - self._bert_stride + BERT_MAX_LEN
-                                batch_end = BERT_MAX_LEN
-                            else:
-                                end = source_num
-                                batch_end = source_num - start + self._bert_stride
-                            source[start:end, :] += bert_hidden[batch_id, self._bert_stride:batch_end, :]
-                            batch_id += 1
-                            start += (BERT_MAX_LEN - self._bert_stride)
-                    bert_hiddens.append(source)
+                        start += (BERT_MAX_LEN - self._bert_stride)
+                bert_hiddens.append(source)
 
-                # now bert hidden has changed size (batch_size, max(art_lens), 768) e.g. (32, 775, 768)
-                # so now we have the token embeddings organised for each article
-                bert_hidden = torch.stack(bert_hiddens)
-            # article = self._bert_relu(self._bert_linear(bert_hidden))
-            article = bert_hidden
+            # now bert hidden has changed size (batch_size, max(art_lens), 768) e.g. (32, 775, 768)
+            # so now we have the token embeddings organised for each article
+            bert_hidden = torch.stack(bert_hiddens)
+        # article = self._bert_relu(self._bert_linear(bert_hidden))
+        article = bert_hidden
 
-            if self._use_t5:
-                # from (32, 775, 768) to (32, 775, 512)
-                article = self._t5_emb(article)
-                enc_art = self._model_t5.encoder(inputs_embeds=article).last_hidden_state
+        if self._use_t5:
+            # from (32, 775, 768) to (32, 775, 512)
+            article = self._t5_emb(article)
+            enc_art = self._model_t5.encoder(inputs_embeds=article).last_hidden_state
 
-            else:
-                # enc_arts (max(art_lens), batch_size, 512) e.g. (775, 32, 512) each vector represents h_k of size 512
-                # final_states: tuple of size 2 with each element of size e.g. (2, 32, 256)
-                #               final_states[0] contains the final hidden states in both directions that's why we have a 2
-                #               final_states[1] contains the final cell states in both directions
-                enc_art, final_states = lstm_multiembedding_encoder(
-                    article, self._enc_lstm, art_lens,
-                    init_enc_states, None, {}, {}
-                )
         else:
-            if self._use_t5:
-                # from (32, 775, 768) to (32, 775, 512)
-                article = self._t5_emb(article)
-                enc_art = self._model_t5.encoder(inputs_embeds=article).last_hidden_state
-
-            else:
-                enc_art, final_states = lstm_multiembedding_encoder(
-                    article, self._enc_lstm, art_lens,
-                    init_enc_states, self._embedding,
-                    feature_embeddings, feature_dict
-                )
+            # enc_arts (max(art_lens), batch_size, 512) e.g. (775, 32, 512) each vector represents h_k of size 512
+            # final_states: tuple of size 2 with each element of size e.g. (2, 32, 256)
+            #               final_states[0] contains the final hidden states in both directions that's why we have a 2
+            #               final_states[1] contains the final cell states in both directions
+            enc_art, final_states = lstm_multiembedding_encoder(
+                article, self._enc_lstm, art_lens,
+                init_enc_states, None, {}, {}
+            )
 
         if self._enc_lstm.bidirectional and not self._use_t5:
             h, c = final_states
@@ -490,106 +396,6 @@ class CopySummGAT(Seq2SeqSumm):
             [init_h[-1], sequence_mean(attention, art_lens, dim=1)], dim=1
         ))
         return attention, (init_dec_states, init_attn_out)
-
-    def _encode_graph(self, articles, nodes, nmask, relations, rmask, triples, adjs, node_num, node_mask=None,
-                      nodefreq=None):
-        # embedding dimensionality of each token e.g.  256
-        d_word = articles.size(-1)
-
-        masks = []
-        # (batch_size, max(ninfo[2]), max_words_node)
-        bs, n_node, n_word = nodes.size()
-
-        # (batch_size, max(ninfo[2])*max_words_node, d_word) e.g. (32, 900, 256)
-        nodes = nodes.view(bs, -1).unsqueeze(2).expand(bs, n_node * n_word, d_word)
-
-        # we get the tokens embeddings of each node from the Roberts layers as explained
-        # in the figure 2 of the paper in the Node Initialization phase
-        # size of nodes is now (batch_size, max(ninfo[2]), max_words_node, d_word) e.g (32, 45, 20, 256)
-        nodes = articles.gather(1, nodes).view(bs, n_node, n_word, d_word).contiguous()
-        nmask = nmask.unsqueeze(3).expand(bs, n_node, n_word, d_word)
-
-        # averaging the tokens embeddings that form the node text representation
-        # size of node is now (batch_size, max(ninfo[2]), d_word) e.g. (32, 45, 256)
-        nodes = self._node_enc(nodes, mask=nmask)
-        if 'nodefreq' in self._feature_banks:
-            assert nodefreq is not None
-            nodefreq = self._node_freq_embedding(nodefreq)
-            nodes = torch.cat([nodes, nodefreq], dim=-1)
-
-        nodes_no_mask = nodes
-        if self._mask_type == 'encoder':
-            nodes, node_mask = self._graph_mask(nodes, node_mask)
-        elif self._mask_type == 'soft':
-
-            # node_mask contains all the m_i^ e.g. (32, 45, 1)
-            # nodes is given by m_i^*v_i
-            nodes, node_mask = self._graph_mask[0](nodes, _input=nodes)
-            masks.append(node_mask.squeeze(2))
-
-        init_nodes = nodes
-
-        if self._adj_type == 'triple':
-            bs, nr, nw = relations.size()
-            edges = relations.view(bs, -1).unsqueeze(2).expand(bs, nr * nw, d_word)
-            edges = articles.gather(1, edges).view(bs, nr, nw, d_word)
-            rmask = rmask.unsqueeze(3).expand(bs, nr, nw, d_word)
-            edges = self._node_enc(edges, mask=rmask)
-        else:
-            edges = nodes
-
-        # we can have multiple layers default is 1
-        for i_layer in range(self._graph_layer_num):
-            if self._adj_type == 'concat_triple':
-
-                triple_reps = []
-                for batch_id, ts in enumerate(triples):
-                    if self._mask_type == 'encoder':
-                        triple_reps.append(
-                            torch.stack(
-                                [
-                                    torch.cat([nodes[batch_id, i, :],
-                                               edges[batch_id, j, :] * node_mask[batch_id, i] * node_mask[batch_id, k],
-                                               nodes[batch_id, k, :]], dim=-1)
-                                    for i, j, k in ts
-                                ])
-                        )
-                    else:
-                        triple_reps.append(
-                            torch.stack(
-                                [
-                                    torch.cat([nodes[batch_id, i, :],
-                                               # edges[batch_id, j, :] * node_mask[batch_id, i] * node_mask[batch_id, k],
-                                               edges[batch_id, j, :],
-                                               nodes[batch_id, k, :]], dim=-1)
-                                    for i, j, k in ts
-                                ])
-                        )
-            else:
-                triple_reps = nodes
-
-            # print('before layer {}, nodes: {}'.format(i_layer, nodes[0:2,:,:10]))
-
-            nodes, edges = self._graph_enc[i_layer](adjs, triple_reps, nodes, node_num, edges)
-            if self._mask_type == 'encoder':
-                nodes, node_mask = self._graph_mask(nodes, node_mask)
-            elif self._mask_type == 'soft':
-                if i_layer == 0:
-                    _input = nodes_no_mask
-
-                # e.g. (32, 45, 512)
-                _input = torch.cat([nodes, nodes_no_mask], dim=-1)
-                original_nodes = nodes
-                nodes, node_mask = self._graph_mask[i_layer + 1](nodes, _input=_input)
-                masks.append(node_mask.squeeze(2))
-                nodes_no_mask = torch.cat([nodes_no_mask, original_nodes], dim=-1)
-
-        # add initial reps v_i obtaining v_i^ e.g. (32, 45, 256)
-        nodes = self._graph_proj(init_nodes) + nodes
-        if 'soft' in self._mask_type:
-            return nodes, masks
-        else:
-            return nodes
 
     def encode_general(self, article, art_lens, extend_art, extend_vsize,
                        nodes, nmask, node_num, feature_dict, adjs,
@@ -1351,439 +1157,3 @@ class CopyDecoderGAT(AttentionalLSTMDecoder):
         return copy
 
 
-class CopySummParagraph(CopySummGAT):
-    def __init__(self, vocab_size, emb_dim,
-                 n_hidden, bidirectional, n_layer, side_dim, dropout=0.0, gat_args={},
-                 adj_type='no_edge', mask_type='none', pe=False, feed_gold=False,
-                 graph_layer_num=1, copy_from_node=False, copy_bank='node',
-                 feature_banks=[], hierarchical_attn=False, bert=False, bert_length=512, decoder_supervision=False):
-        super().__init__(vocab_size, emb_dim,
-                         n_hidden, bidirectional, n_layer, side_dim, dropout, gat_args,
-                         adj_type, mask_type, pe, feed_gold,
-                         graph_layer_num, copy_from_node, copy_bank, feature_banks, bert, bert_length)
-
-        feat_emb_dim = emb_dim // 4
-        graph_hsz = n_hidden
-        if 'nodefreq' in self._feature_banks:
-            graph_hsz += feat_emb_dim
-        gat_args['graph_hsz'] = graph_hsz
-
-        gat_args['graph_hsz'] = graph_hsz
-
-        self._graph_enc = subgraph_encode(gat_args)
-
-        self._bert = bert
-        if self._bert:
-            self._bert_model = RobertaEmbedding()
-            self._embedding = self._bert_model._embedding
-            self._embedding.weight.requires_grad = False
-            emb_dim = self._embedding.weight.size(1)
-            self._bert_max_length = bert_length
-            self._enc_lstm = nn.LSTM(
-                emb_dim, n_hidden, n_layer,
-                bidirectional=bidirectional, dropout=dropout
-            )
-            self._projection = nn.Sequential(
-                nn.Linear(2 * n_hidden, n_hidden),
-                nn.Tanh(),
-                nn.Linear(n_hidden, emb_dim, bias=False)
-            )
-            self._dec_lstm = MultiLayerLSTMCells(
-                emb_dim * 2, n_hidden, n_layer, dropout=dropout
-            )
-            self._bert_stride = 256
-
-        if mask_type == 'encoder':
-            self._graph_mask = node_mask(mask_type='gold')
-        elif mask_type == 'soft':
-            self._graph_mask = node_mask(mask_type=mask_type, emb_dim=graph_hsz)
-        else:
-            self._graph_mask = node_mask(mask_type='none')
-
-        self._hierarchical_attn = hierarchical_attn
-        if self._hierarchical_attn:
-            self._para_wm = nn.Parameter(torch.Tensor(graph_hsz, n_hidden))
-            self._para_v = nn.Parameter(torch.Tensor(n_hidden))
-            init.xavier_normal_(self._para_wm)
-            init.uniform_(self._para_v, -INIT, INIT)
-        else:
-            self._para_wm = None
-            self._para_v = None
-
-        self._decoder = CopyDecoderGAT(
-            self._copy, self._attn_s1, self._attns_wm, self._attns_wq, self._attn_v, copy_from_node,
-            self._attn_copyh, self._attn_copyv, False, None, self._para_wm, self._para_v, self._hierarchical_attn,
-            self._embedding, self._dec_lstm, self._attn_wq, self._projection_decoder, self._attn_wb, self._attn_v
-        )
-
-    def forward(self, article, art_lens, abstract, extend_art, extend_vsize, ninfo, rinfo, ext_ninfo=None):
-        (nodes, nmask, node_num, sw_mask, feature_dict, node_lists) = ninfo
-        (relations, rmask, triples, adjs) = rinfo
-        attention, init_dec_states = self.encode(article, feature_dict, art_lens)
-        if self._gold:
-            sw_mask = sw_mask
-        else:
-            sw_mask = None
-
-        if self._mask_type == 'soft' or self._mask_type == 'none':
-            outputs = self._encode_graph(attention, nodes, nmask, relations,
-                                         rmask, adjs, node_lists, node_mask=None,
-                                         nodefreq=feature_dict['node_freq'])
-        else:
-            outputs = self._encode_graph(attention, nodes, nmask, relations, rmask, adjs, node_lists, sw_mask,
-                                         nodefreq=feature_dict['node_freq'])
-        if self._hierarchical_attn:
-            topics, masks, paras = outputs
-        elif 'soft' in self._mask_type:
-            topics, masks = outputs
-            paras = None
-        else:
-            topics = outputs
-            paras = None
-        ext_info = None
-
-        mask = len_mask(art_lens, attention.device).unsqueeze(-2)
-
-        logit, selections = self._decoder(
-            (attention, mask, extend_art, extend_vsize),
-            init_dec_states, abstract,
-            topics[0],
-            topics[1],
-            sw_mask,
-            False,
-            ext_info,
-            paras
-        )
-        logit = (logit,)
-        if 'soft' in self._mask_type:
-            logit += (masks,)
-
-        return logit
-
-    def _encode_graph(self, articles, nodes, nmask, relations, rmask, batch_adjs, node_lists, node_mask=None,
-                      nodefreq=None):
-        d_word = articles.size(-1)
-
-        masks = []
-        bs, n_node, n_word = nodes.size()
-        nodes = nodes.view(bs, -1).unsqueeze(2).expand(bs, n_node * n_word, d_word)
-        nodes = articles.gather(1, nodes).view(bs, n_node, n_word, d_word).contiguous()
-        nmask = nmask.unsqueeze(3).expand(bs, n_node, n_word, d_word)
-        nodes = self._node_enc(nodes, mask=nmask)
-        if 'nodefreq' in self._feature_banks:
-            assert nodefreq is not None
-            nodefreq = self._node_freq_embedding(nodefreq)
-            nodes = torch.cat([nodes, nodefreq], dim=-1)
-        if self._mask_type == 'encoder':
-            nodes, node_mask = self._graph_mask(nodes, node_mask)
-        elif self._mask_type == 'soft':
-            nodes, node_mask = self._graph_mask(nodes, _input=nodes)
-            masks.append(node_mask.squeeze(2))
-
-        # topics, topic_length = self._graph_enc(batch_adjs, nodes, node_lists)
-        if self._hierarchical_attn:
-            (topics, topic_length), (node_reps, node_length, node_align_paras) = self._graph_enc(batch_adjs, nodes,
-                                                                                                 node_lists,
-                                                                                                 output_node_rep=True)
-        else:
-            topics, topic_length = self._graph_enc(batch_adjs, nodes, node_lists)
-
-        results = ((topics, topic_length),)
-
-        if 'soft' in self._mask_type:
-            results += (masks,)
-
-        if self._hierarchical_attn:
-            node_para_aligns = pad_batch_tensorize(node_align_paras, pad=0, cuda=False).to(node_reps.device)
-            results += ((node_reps, node_length, node_para_aligns),)
-
-        return results
-        # if 'soft' in self._mask_type:
-        #     return (topics, topic_length), masks
-        # else:
-        #     return (topics, topic_length)
-
-    def greedy(self, article, art_lens, extend_art, extend_vsize,
-               nodes, nmask, node_num, feature_dict, node_lists, adjs,
-               go, eos, unk, max_len, tar_in):
-        """ greedy decode support batching"""
-        batch_size = len(art_lens)
-        vsize = self._embedding.num_embeddings
-        attention, init_dec_states = self.encode(article, feature_dict, art_lens)
-        #
-        # (topics, topiclength), masks = self._encode_graph(attention, nodes, nmask,
-        #                                       None, None, adjs, node_lists, None, nodefreq=feature_dict['node_freq'])
-
-        outputs = self._encode_graph(attention, nodes, nmask, None,
-                                     None, adjs, node_lists, node_mask=None,
-                                     nodefreq=feature_dict['node_freq'])
-        if self._hierarchical_attn:
-            topics, masks, paras = outputs
-        elif 'soft' in self._mask_type:
-            topics, masks = outputs
-            paras = None
-        else:
-            topics = outputs
-            paras = None
-
-        mask = len_mask(art_lens, attention.device).unsqueeze(-2)
-        attention = (attention, mask, extend_art, extend_vsize)
-        tok = torch.LongTensor([go] * batch_size).to(article.device)
-
-        outputs = []
-        attns = []
-        states = init_dec_states
-        for i in range(max_len):
-            tok, states, attn_score, node_attn_score = self._decoder.decode_step(
-                tok, states, attention, topics[0], topics[1], paras=paras)
-            # print('greedy tok:', tok.size())
-            if i == 0:
-                unfinished = (tok != eos)
-                # print('greedy tok:', tok)
-            else:
-                it = tok * unfinished.type_as(tok)
-                unfinished = unfinished * (it != eos)
-            attns.append(attn_score)
-            if i == 0:
-                outputs.append(tok[:, 0].clone())
-            else:
-                outputs.append(it[:, 0].clone())
-            tok.masked_fill_(tok >= vsize, unk)
-            if unfinished.data.sum() == 0:
-                break
-        return outputs, attns
-
-    def sample(self, article, art_lens, extend_art, extend_vsize,
-               nodes, nmask, node_num, feature_dict, node_lists, adjs,
-               go, eos, unk, max_len, abstract, ml):
-        """ greedy decode support batching"""
-        batch_size = len(art_lens)
-        vsize = self._embedding.num_embeddings
-        attention, init_dec_states = self.encode(article, feature_dict, art_lens)
-
-        # (topics, topiclength), masks = self._encode_graph(attention, nodes, nmask,
-        #                                                   None, None, adjs, node_lists, None,
-        #                                                   nodefreq=feature_dict['node_freq'])
-        outputs = self._encode_graph(attention, nodes, nmask, None,
-                                     None, adjs, node_lists, node_mask=None,
-                                     nodefreq=feature_dict['node_freq'])
-        if self._hierarchical_attn:
-            topics, masks, paras = outputs
-        elif 'soft' in self._mask_type:
-            topics, masks = outputs
-            paras = None
-        else:
-            topics = outputs
-            paras = None
-
-        mask = len_mask(art_lens, attention.device).unsqueeze(-2)
-        attention = (attention, mask, extend_art, extend_vsize)
-        tok = torch.LongTensor([go] * batch_size).to(article.device)
-
-        outputs = []
-        attns = []
-        states = init_dec_states
-        seqLogProbs = []
-        for i in range(max_len):
-            tok, states, attn_score, sampleProb = self._decoder.sample_step(
-                tok, states, attention, topics[0], topics[1], paras=paras)
-            # print('sample tok:', tok)
-            if i == 0:
-                unfinished = (tok != eos)
-            else:
-                it = tok * unfinished.type_as(tok)
-                unfinished = unfinished * (it != eos)
-            attns.append(attn_score.detach())
-            if i == 0:
-                outputs.append(tok[:, 0].clone())
-            else:
-                outputs.append(it[:, 0].clone())
-            tok = tok.masked_fill(tok >= vsize, unk)
-            seqLogProbs.append(sampleProb)
-            if unfinished.data.sum() == 0:
-                break
-        return outputs, attns, seqLogProbs
-
-    def batch_decode(self, article, art_lens, extend_art, extend_vsize,
-                     ninfo, rinfo, ext_ninfo,
-                     go, eos, unk, max_len, beam_size, diverse=1.0, min_len=0):
-        """ greedy decode support batching"""
-
-        return 0
-
-    def decode(self, article, extend_art, extend_vsize, go, eos, unk, max_len):
-        vsize = self._embedding.num_embeddings
-        attention, init_dec_states = self.encode(article)
-        attention = (attention, None, extend_art, extend_vsize)
-        tok = torch.LongTensor([go]).to(article.device)
-        outputs = []
-        attns = []
-        states = init_dec_states
-        for i in range(max_len):
-            tok, states, attn_score = self._decoder.decode_step(
-                tok, states, attention)
-            if tok[0, 0].item() == eos:
-                break
-            outputs.append(tok[0, 0].item())
-            attns.append(attn_score.squeeze(0))
-            if tok[0, 0].item() >= vsize:
-                tok[0, 0] = unk
-        return outputs, attns
-
-    def batched_beamsearch(self, article, art_lens,
-                           extend_art, extend_vsize,
-                           ninfo, rinfo, ext_ninfo,
-                           go, eos, unk, max_len, beam_size, diverse=1.0, min_len=35):
-        (nodes, nmask, node_num, sw_mask, feature_dict, node_lists) = ninfo
-        (relations, rmask, triples, adjs) = rinfo
-        if self._copy_from_node:
-            (all_node_words, all_node_mask, ext_node_aligns, gold_copy_mask) = ext_ninfo
-        if self._gold:
-            sw_mask = sw_mask
-        else:
-            sw_mask = None
-        batch_size = len(art_lens)
-        vsize = self._embedding.num_embeddings
-        attention, init_dec_states = self.encode(article, feature_dict, art_lens)
-
-        if self._mask_type == 'soft' or self._mask_type == 'none':
-            outputs = self._encode_graph(attention, nodes, nmask, relations,
-                                         rmask, adjs, node_lists, node_mask=None,
-                                         nodefreq=feature_dict['node_freq'])
-        else:
-            outputs = self._encode_graph(attention, nodes, nmask, relations, rmask, adjs, node_lists, sw_mask,
-                                         nodefreq=feature_dict['node_freq'])
-        if self._hierarchical_attn:
-            topics, masks, paras = outputs
-        elif 'soft' in self._mask_type:
-            topics, masks = outputs
-            nodes = topics[0]
-            node_num = topics[1]
-            paras = None
-        else:
-            topics = outputs
-            nodes = topics[0]
-            node_num = topics[1]
-            paras = None
-        ext_info = None
-
-        # if self._mask_type == 'soft' or self._mask_type == 'none':
-        #     (topics, topiclength), masks = self._encode_graph(attention, nodes, nmask, relations,
-        #                                       rmask, adjs, node_lists, node_mask=None,
-        #                                       nodefreq=feature_dict['node_freq'])
-        # else:
-        #     (topics, topiclength) = self._encode_graph(attention, nodes, nmask, relations, rmask, adjs, node_lists, sw_mask,
-        #                                nodefreq=feature_dict['node_freq'])
-        # nodes = topics
-        # node_num = topiclength
-
-        ext_info = None
-
-        mask = len_mask(art_lens, attention.device).unsqueeze(-2)
-        all_attention = (attention, mask, extend_art, extend_vsize)
-        attention = all_attention
-        (h, c), prev = init_dec_states
-        all_beams = [bs.init_beam(go, (h[:, i, :], c[:, i, :], prev[i]))
-                     for i in range(batch_size)]
-        if self._hierarchical_attn:
-            max_node_num = max(topics[1])
-        else:
-            max_node_num = max(node_num)
-        if self._hierarchical_attn:
-            all_nodes = [(topics[0][i, :, :], topics[1][i]) for i in range(len(topics[1]))]
-            all_paras = [(paras[0][i, :, :], paras[1][i], paras[2][i, :]) for i in range(len(paras[1]))]
-            max_subgraph_node_num = max(paras[1])
-        else:
-            if sw_mask is not None:
-                all_nodes = [(nodes[i, :, :], node_num[i], sw_mask[i, :]) for i in range(len(node_num))]
-            else:
-                all_nodes = [(nodes[i, :, :], node_num[i]) for i in range(len(node_num))]
-
-        finished_beams = [[] for _ in range(batch_size)]
-        outputs = [None for _ in range(batch_size)]
-        for t in range(max_len):
-            toks = []
-            all_states = []
-            for beam in filter(bool, all_beams):
-                token, states = bs.pack_beam(beam, article.device)
-                toks.append(token)
-                all_states.append(states)
-            token = torch.stack(toks, dim=1)
-            states = ((torch.stack([h for (h, _), _ in all_states], dim=2),
-                       torch.stack([c for (_, c), _ in all_states], dim=2)),
-                      torch.stack([prev for _, prev in all_states], dim=1))
-            token.masked_fill_(token >= vsize, unk)
-
-            filtered_nodes = torch.stack([all_nodes[i][0] for i, _beam in enumerate(all_beams) if _beam != []], dim=0)
-            filtered_node_num = [all_nodes[i][1] for i, _beam in enumerate(all_beams) if _beam != []]
-            if sw_mask is not None:
-                filtered_sw_mask = torch.stack([all_nodes[i][2] for i, _beam in enumerate(all_beams) if _beam != []],
-                                               dim=0)
-            else:
-                filtered_sw_mask = None
-            if self._hierarchical_attn:
-                filtered_paras = [
-                    torch.stack([all_paras[i][0] for i, _beam in enumerate(all_beams) if _beam != []], dim=0),
-                    [all_paras[i][1] for i, _beam in enumerate(all_beams) if _beam != []],
-                    torch.stack([all_paras[i][2] for i, _beam in enumerate(all_beams) if _beam != []], dim=0),
-                    max_subgraph_node_num]
-            else:
-                filtered_paras = None
-
-            filtered_ext_info = None
-
-            if t < min_len:
-                force_not_stop = True
-            else:
-                force_not_stop = False
-            topk, lp, states, attn_score = self._decoder.topk_step(
-                token, states, attention, beam_size, filtered_nodes, filtered_node_num,
-                max_node_num=max_node_num, side_mask=filtered_sw_mask, force_not_stop=force_not_stop,
-                filtered_ext_info=filtered_ext_info, filtered_para_info=filtered_paras, eos=eos)
-
-            batch_i = 0
-            for i, (beam, finished) in enumerate(zip(all_beams,
-                                                     finished_beams)):
-                if not beam:
-                    continue
-                finished, new_beam = bs.next_search_beam(
-                    beam, beam_size, finished, eos,
-                    topk[:, batch_i, :], lp[:, batch_i, :],
-                    (states[0][0][:, :, batch_i, :],
-                     states[0][1][:, :, batch_i, :],
-                     states[1][:, batch_i, :]),
-                    attn_score[:, batch_i, :],
-                    diverse
-                )
-                batch_i += 1
-                if len(finished) >= beam_size:
-                    all_beams[i] = []
-                    outputs[i] = finished[:beam_size]
-                    # exclude finished inputs
-                    (attention, mask, extend_art, extend_vsize
-                     ) = all_attention
-                    masks = [mask[j] for j, o in enumerate(outputs)
-                             if o is None]
-                    ind = [j for j, o in enumerate(outputs) if o is None]
-                    ind = torch.LongTensor(ind).to(attention.device)
-                    attention, extend_art = map(
-                        lambda v: v.index_select(dim=0, index=ind),
-                        [attention, extend_art]
-                    )
-                    if masks:
-                        mask = torch.stack(masks, dim=0)
-                    else:
-                        mask = None
-                    attention = (
-                        attention, mask, extend_art, extend_vsize)
-                else:
-                    all_beams[i] = new_beam
-                    finished_beams[i] = finished
-            if all(outputs):
-                break
-        else:
-            for i, (o, f, b) in enumerate(zip(outputs,
-                                              finished_beams, all_beams)):
-                if o is None:
-                    outputs[i] = (f + b)[:beam_size]
-        return outputs

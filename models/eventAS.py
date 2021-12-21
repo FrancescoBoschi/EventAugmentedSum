@@ -1,3 +1,5 @@
+import numpy as np
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -5,20 +7,33 @@ import torch.nn.functional as F
 from models.deepGM import DeepGraphMine
 from idgl.models.graph import Graph
 from idgl.utils.generic_utils import to_cuda
+from idgl.utils import constants as Constants
+
+
+from graph_augmented_sum.model.copy_summ_multiencoder import CopySummIDGL
 
 
 class EventAugmentedSumm(nn.Module):
-    def __init__(self, configdgm, configIDGL):
+    def __init__(self, configdgm, configIDGL, csg_net_args):
         super().__init__()
 
         self.deepGM = DeepGraphMine(configdgm)
         self.IDGLnetwork = Graph(configIDGL, self.deepGM.node_dim)
+        self.csg_net = CopySummIDGL(**csg_net_args)
 
-    def forward(self, article, art_lens, abstract, extend_art, extend_vsize, sentences, fids):
+    def forward(self, article, art_lens, abstract, extend_art, extend_vsize, target, sentences):
 
         batch_nodes_vec, batch_adjs, nodes_num = self.deepGM(sentences)
+        self.batch_size = batch_nodes_vec.size(0)
 
-    def batch_IGL(self, init_adj, init_node_vec, nodes_num, training, out_predictions=False):
+        artinfo = (article, art_lens, extend_art, extend_vsize)
+        absinfo = (abstract, target)
+
+        loss = self.batch_IGL(batch_nodes_vec, batch_adjs, nodes_num, True, artinfo, absinfo)
+
+        return loss
+
+    def batch_IGL(self, init_adj, init_node_vec, nodes_num, training, artinfo, absinfo):
         """
         :param init_adj: is the adjancency matrix A^(0). size (batch_size, num_nodes, num_nodes) e.g. (5, 2708, 2708)
         :param init_node_vec: it's the matrix X that contains the feature vectors for each node. size (num_nodes, num_feat) e.g. (2708, 2604)
@@ -43,8 +58,7 @@ class EventAugmentedSumm(nn.Module):
         node_vec = network.encoder(init_node_vec, cur_adj)
         node_vec = F.dropout(node_vec, network.dropout, training=network.training)
 
-        loss1 = self.model.criterion(output, targets)
-        score = self.model.score_func(targets.cpu(), output.detach().cpu())
+        loss1 = self.csg_net(artinfo, absinfo, node_vec, nodes_num)
 
         if self.config['graph_learn'] and self.config['graph_learn_regularization']:
             loss1 += self.add_batch_graph_loss(cur_raw_adj, init_node_vec)
@@ -73,10 +87,9 @@ class EventAugmentedSumm(nn.Module):
         iter_ = 0
 
         # Indicate the last iteration number for each example
-        batch_last_iters = to_cuda(torch.zeros(x_batch['batch_size'], dtype=torch.uint8), self.device)
+        batch_last_iters = to_cuda(torch.zeros(self.batch_size, dtype=torch.uint8), self.device)
         # Indicate either an example is in onging state (i.e., 1) or stopping state (i.e., 0)
-        batch_stop_indicators = to_cuda(torch.ones(x_batch['batch_size'], dtype=torch.uint8), self.device)
-        batch_all_outputs = []
+        batch_stop_indicators = to_cuda(torch.ones(self.batch_size, dtype=torch.uint8), self.device)
         while self.config['graph_learn'] and (iter_ == 0 or torch.sum(batch_stop_indicators).item() > 0) and iter_ < max_iter_:
             iter_ += 1
             batch_last_iters += batch_stop_indicators
@@ -96,11 +109,7 @@ class EventAugmentedSumm(nn.Module):
             node_vec = network.encoder(init_node_vec, cur_adj)
             node_vec = F.dropout(node_vec, self.config.get('gl_dropout', 0), training=network.training)
 
-            batch_all_outputs.append(tmp_output.unsqueeze(1))
-
-            tmp_loss = self.model.criterion(tmp_output, targets, reduction='none')
-            if len(tmp_loss.shape) == 2:
-                tmp_loss = torch.mean(tmp_loss, 1)
+            tmp_loss = self.csg_net(artinfo, absinfo, node_vec, nodes_num)
 
             loss += batch_stop_indicators.float() * tmp_loss
 
@@ -117,33 +126,17 @@ class EventAugmentedSumm(nn.Module):
         if iter_ > 0:
             loss = torch.mean(loss / batch_last_iters.float()) + loss1
 
-            batch_all_outputs = torch.cat(batch_all_outputs, 1)
-            selected_iter_index = batch_last_iters.long().unsqueeze(-1) - 1
-
-            if len(batch_all_outputs.shape) == 3:
-                selected_iter_index = selected_iter_index.unsqueeze(-1).expand(-1, -1, batch_all_outputs.size(-1))
-                output = batch_all_outputs.gather(1, selected_iter_index).squeeze(1)
-            else:
-                output = batch_all_outputs.gather(1, selected_iter_index)
-
-            score = self.model.score_func(targets.cpu(), output.detach().cpu())
-
-
         else:
             loss = loss1
 
-        res = {'loss': loss.item(),
-                'metrics': {'nloss': -loss.item(), self.model.metric_name: score},
-        }
-        if out_predictions:
-            res['predictions'] = output.detach().cpu()
+        return loss
 
-        if training:
-            loss = loss / self.config['grad_accumulated_steps'] # Normalize our loss (if averaged)
-            loss.backward()
+def batch_diff(X, Y, Z):
+    assert X.shape == Y.shape
+    diff_ = torch.sum(torch.pow(X - Y, 2), (1, 2)) # Shape: [batch_size]
+    norm_ = torch.sum(torch.pow(Z, 2), (1, 2))
+    diff_ = diff_ / torch.clamp(norm_, min=Constants.VERY_SMALL_NUMBER)
+    return diff_
 
-            if (step + 1) % self.config['grad_accumulated_steps'] == 0: # Wait for several backward steps
-                self.model.clip_grad()
-                self.model.optimizer.step()
-                self.model.optimizer.zero_grad()
-        return res
+def batch_SquaredFrobeniusNorm(X):
+    return torch.sum(torch.pow(X, 2), (1, 2)) / int(np.prod(X.shape[1:]))
