@@ -2,21 +2,17 @@ import torch
 from torch import nn
 from torch.nn import init
 from torch.nn import functional as F
-from transformers import T5Model
 
-from graph_augmented_sum.data.batcher import pad_batch_tensorize
-from .attention import step_attention, badanau_attention, copy_from_node_attention, hierarchical_attention
-from .util import len_mask, sequence_mean, sequence_loss
-from .summ import Seq2SeqSumm, AttentionalLSTMDecoder
-from . import beam_search as bs
+from graph_augmented_sum.model.attention import step_attention, badanau_attention, copy_from_node_attention, hierarchical_attention
+from graph_augmented_sum.model.util import len_mask, sequence_mean, sequence_loss
+from graph_augmented_sum.model.summ import Seq2SeqSumm, AttentionalLSTMDecoder
+from graph_augmented_sum.model import beam_search as bs
 from graph_augmented_sum.utils import PAD, UNK, START, END
-from graph_augmented_sum.model.graph_enc import gat_encode, node_mask
-from graph_augmented_sum.model.extract import MeanSentEncoder
 from graph_augmented_sum.model.rnn import lstm_multiembedding_encoder
-from graph_augmented_sum.model.graph_enc import subgraph_encode
+from graph_augmented_sum.model.scibert import ScibertEmbedding
 from graph_augmented_sum.model.roberta import RobertaEmbedding
-from .rnn import MultiLayerLSTMCells
-
+from graph_augmented_sum.model.rnn import MultiLayerLSTMCells
+Seq2SeqSumm
 MAX_FREQ = 100
 INIT = 1e-2
 BERT_MAX_LEN = 512
@@ -58,31 +54,30 @@ class _CopyLinear(nn.Module):
 
 class CopySummIDGL(Seq2SeqSumm):
     def __init__(self, vocab_size, emb_dim,
-                 n_hidden, bidirectional, n_layer, side_dim, dropout=0.0, bert=False, bert_length=512):
+                 n_hidden, bidirectional, n_layer, side_dim, dropout=0.0, bert_length=512):
         super().__init__(vocab_size, emb_dim,
                          n_hidden, bidirectional, n_layer, dropout)
-        self._bert = bert
-        if self._bert:
-            self._bert_model = RobertaEmbedding()
-            self._embedding = self._bert_model._embedding
-            self._embedding.weight.requires_grad = False
-            emb_dim = self._embedding.weight.size(1)
-            self._bert_max_length = bert_length
-            self._enc_lstm = nn.LSTM(
-                emb_dim, n_hidden, n_layer,
-                bidirectional=bidirectional, dropout=dropout
-            )
 
-            self._projection = nn.Sequential(
-                nn.Linear(2 * n_hidden, n_hidden),
-                nn.Tanh(),
-                nn.Linear(n_hidden, emb_dim, bias=False)
-            )
-            self._dec_lstm = MultiLayerLSTMCells(
-                emb_dim * 2, n_hidden, n_layer, dropout=dropout
-            )
-            # overlap between 2 lots to avoid breaking paragraph
-            self._bert_stride = 256
+        self._bert_model = RobertaEmbedding()
+        self._embedding = self._bert_model._embedding
+        self._embedding.weight.requires_grad = False
+        emb_dim = self._embedding.weight.size(1)
+        self._bert_max_length = bert_length
+        self._enc_lstm = nn.LSTM(
+            emb_dim, n_hidden, n_layer,
+            bidirectional=bidirectional, dropout=dropout
+        )
+
+        self._projection = nn.Sequential(
+            nn.Linear(2 * n_hidden, n_hidden),
+            nn.Tanh(),
+            nn.Linear(n_hidden, emb_dim, bias=False)
+        )
+        self._dec_lstm = MultiLayerLSTMCells(
+            emb_dim * 2, n_hidden, n_layer, dropout=dropout
+        )
+        # overlap between 2 lots to avoid breaking paragraph
+        self._bert_stride = 256
 
         self._copy = _CopyLinear(n_hidden, n_hidden, 2 * emb_dim, side_dim, side_dim)
 
@@ -105,7 +100,6 @@ class CopySummIDGL(Seq2SeqSumm):
         init.uniform_(self._attns_v, -INIT, INIT)
         self._graph_proj = nn.Linear(graph_hsz, graph_hsz)
 
-
         self._projection_decoder = nn.Sequential(
             nn.Linear(3 * n_hidden, n_hidden),
             nn.Tanh(),
@@ -114,8 +108,7 @@ class CopySummIDGL(Seq2SeqSumm):
         self._decoder_supervision = False
 
         self._decoder = CopyDecoderGAT(
-            self._copy, self._attn_s1, self._attns_wm, self._attns_wq, self._attn_v,
-            self._attn_copyh, self._attn_copyv, None, None, False,
+            self._copy, self._attn_s1, self._attns_wm, self._attns_wq, self._attn_v, None, None, False,
             self._embedding, self._dec_lstm, self._attn_wq, self._projection_decoder, self._attn_wb, self._attn_v,
         )
 
@@ -196,7 +189,7 @@ class CopySummIDGL(Seq2SeqSumm):
         if self._bert_max_length > 512:
             source_nums = art_lens
 
-        # no finetuning Roberta weights
+        # no finetuning Bert weights
         with torch.no_grad():
             # bert_out[0] (n_split_docs, 512, 768) contains token embeddings
             # bert_out[1] (n_split_docs, 768) contains sentence embeddings
@@ -265,32 +258,31 @@ class CopySummIDGL(Seq2SeqSumm):
                 torch.cat(c.chunk(2, dim=0), dim=2)
             )
 
-        else:
-            # in_features=512, out_features=256
-            init_h = torch.stack([self._dec_h(s)
-                                  for s in final_states[0]], dim=0)
-            init_c = torch.stack([self._dec_c(s)
-                                  for s in final_states[1]], dim=0)
+        # in_features=512, out_features=256
+        init_h = torch.stack([self._dec_h(s)
+                              for s in final_states[0]], dim=0)
+        init_c = torch.stack([self._dec_c(s)
+                              for s in final_states[1]], dim=0)
 
-            # init_dec_states[0]: final hidden state ready for the decoder single-layer unidirectional LSTM
-            # init_dec_states[1]: final cell state ready for the decoder single-layer unidirectional LSTM
-            init_dec_states = (init_h, init_c)
+        # init_dec_states[0]: final hidden state ready for the decoder single-layer unidirectional LSTM
+        # init_dec_states[1]: final cell state ready for the decoder single-layer unidirectional LSTM
+        init_dec_states = (init_h, init_c)
 
-            # self._attn_wm is of size e.g (512, 256) so we get from (775, 32, 512)
-            # to (775, 32, 256) and finally after transposing to (32, 775, 256)
-            # basically we perform W_6 * h_k
-            attention = torch.matmul(enc_art, self._attn_wm).transpose(0, 1)
+        # self._attn_wm is of size e.g (512, 256) so we get from (775, 32, 512)
+        # to (775, 32, 256) and finally after transposing to (32, 775, 256)
+        # basically we perform W_6 * h_k
+        attention = torch.matmul(enc_art, self._attn_wm).transpose(0, 1)
 
-            # we write init_h[-1] because we want the last layer output
-            # we can have multiple layers, by default we just have 1
-            # init_attn_out it's going do be used together with self._embedding(tok).squeeze(1)
-            # as the feature embeddings of the decoder single-layer unidirectional LSTM
-            # basically it's the concatenation of the final hidden state and the average of all
-            # the token embeddings W_6 * h_k in the article e.g. (32, 768)
-            init_attn_out = self._projection(torch.cat(
-                [init_h[-1], sequence_mean(attention, art_lens, dim=1)], dim=1
-            ))
-            return attention, (init_dec_states, init_attn_out)
+        # we write init_h[-1] because we want the last layer output
+        # we can have multiple layers, by default we just have 1
+        # init_attn_out it's going do be used together with self._embedding(tok).squeeze(1)
+        # as the feature embeddings of the decoder single-layer unidirectional LSTM
+        # basically it's the concatenation of the final hidden state and the average of all
+        # the token embeddings W_6 * h_k in the article e.g. (32, 768)
+        init_attn_out = self._projection(torch.cat(
+            [init_h[-1], sequence_mean(attention, art_lens, dim=1)], dim=1
+        ))
+        return attention, (init_dec_states, init_attn_out)
 
     def encode_bert(self, article, feature_dict, art_lens=None):
         size = (
@@ -567,7 +559,6 @@ class CopySummIDGL(Seq2SeqSumm):
         finished_beams = [[] for _ in range(batch_size)]
         outputs = [None for _ in range(batch_size)]
 
-        all_tokens_list = []
         for t in range(max_len):
 
             all_states = []
@@ -664,7 +655,7 @@ class CopySummIDGL(Seq2SeqSumm):
 
 
 class CopyDecoderGAT(AttentionalLSTMDecoder):
-    def __init__(self, copy, attn_s1, attns_wm, attns_wq, attns_v, attn_copyh=None, attn_copyv=None,
+    def __init__(self, copy, attn_s1, attns_wm, attns_wq, attns_v,
                  para_wm=None, para_v=None, hierarchical_attention=False, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self._copy = copy
@@ -672,8 +663,6 @@ class CopyDecoderGAT(AttentionalLSTMDecoder):
         self._attns_wm = attns_wm
         self._attns_wq = attns_wq
         self._attns_v = attns_v
-        self._attn_copyh = attn_copyh
-        self._attn_copyv = attn_copyv
         self.device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
 
         self._hierarchical_attn = hierarchical_attention

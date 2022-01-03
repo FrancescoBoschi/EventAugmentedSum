@@ -30,6 +30,7 @@ def calculate_offset(sentences, i):
 
 
 def prep_sentence_offsets(sentences0):
+    print(sentences0)
     sentences_ = []
     sent_words = []
     words_ = []

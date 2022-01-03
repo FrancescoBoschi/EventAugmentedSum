@@ -8,6 +8,7 @@ from os.path import join, exists
 import pickle as pkl
 
 from cytoolz import compose, concat
+from transformers import RobertaTokenizer
 
 import torch
 from torch import optim
@@ -15,21 +16,16 @@ from torch.nn import functional as F
 from torch.optim.lr_scheduler import ReduceLROnPlateau
 from torch.utils.data import DataLoader, Dataset
 
-from graph_augmented_sum.model.copy_summ import CopySumm
-from graph_augmented_sum.model.copy_summ_multiencoder import CopySummGAT, CopySummParagraph
+from deep_event_mine.bert.tokenization import BertTokenizer
+
+from models.eventAS import EventAugmentedSumm
 from graph_augmented_sum.model.util import sequence_loss
 
 from graph_augmented_sum.data.batcher import coll_fn, prepro_fn
 from graph_augmented_sum.data.batcher import prepro_fn_copy_bert, convert_batch_copy_bert, batchify_fn_copy_bert
-from graph_augmented_sum.data.batcher import convert_batch_copy, batchify_fn_copy
 from graph_augmented_sum.data.batcher import BucketedGenerater
-from graph_augmented_sum.data.abs_batcher import convert_batch_gat, batchify_fn_gat, prepro_fn_gat, coll_fn_gat
-from graph_augmented_sum.data.abs_batcher import convert_batch_gat_bert, batchify_fn_gat_bert, prepro_fn_gat_bert
 from graph_augmented_sum.training import multitask_validate
 
-from graph_augmented_sum.utils import PAD, UNK, START, END
-from graph_augmented_sum.utils import make_vocab, make_embedding
-from transformers import RobertaTokenizer, BertTokenizer
 import pickle
 
 # NOTE: bucket size too large may sacrifice randomness,
@@ -71,58 +67,23 @@ def get_bert_align_dict(filename='preprocessing/bertalign-base.pkl'):
     return bert_dict
 
 
-def configure_net(vocab_size, emb_dim,
-                  n_hidden, bidirectional, n_layer, load_from=None, bert=False, max_art=800):
-    net_args = {}
-    net_args['vocab_size'] = vocab_size
-    net_args['emb_dim'] = emb_dim
-    net_args['n_hidden'] = n_hidden
-    net_args['bidirectional'] = bidirectional
-    net_args['n_layer'] = n_layer
-    net_args['bert'] = bert
-    net_args['bert_length'] = max_art
+def configure_net(configdgm, configIDGL, vocab_size, emb_dim,
+                  n_hidden, bidirectional, n_layer, bert_length=512):
 
-    net = CopySumm(**net_args)
-    if load_from is not None:
-        abs_ckpt = load_best_ckpt(load_from)
-        net.load_state_dict(abs_ckpt)
+    csg_net_args = {}
+    csg_net_args['vocab_size'] = vocab_size
+    csg_net_args['emb_dim'] = emb_dim
+    csg_net_args['side_dim'] = n_hidden
+    csg_net_args['n_hidden'] = n_hidden
+    csg_net_args['bidirectional'] = bidirectional
+    csg_net_args['n_layer'] = n_layer
+    csg_net_args['bert_length'] = bert_length
 
-    return net, net_args
+    net = EventAugmentedSumm(configdgm, configIDGL, csg_net_args)
 
-
-def configure_net_gat(vocab_size, emb_dim,
-                      n_hidden, bidirectional, n_layer, load_from=None, gat_args={},
-                      adj_type='no_edge', mask_type='none',
-                      feed_gold=False, graph_layer_num=1, feature=[], subgraph=False, hierarchical_attn=False,
-                      bert=False, bert_length=512, use_t5=False
-                      ):
-    net_args = {}
-    net_args['vocab_size'] = vocab_size
-    net_args['emb_dim'] = emb_dim
-    net_args['side_dim'] = n_hidden
-    net_args['n_hidden'] = n_hidden
-    net_args['bidirectional'] = bidirectional
-    net_args['n_layer'] = n_layer
-    net_args['gat_args'] = gat_args
-    net_args['feed_gold'] = feed_gold
-    net_args['mask_type'] = mask_type
-    net_args['adj_type'] = adj_type
-    net_args['graph_layer_num'] = graph_layer_num
-    net_args['feature_banks'] = feature
-    net_args['bert'] = bert
-    net_args['bert_length'] = bert_length
-    if subgraph:
-        net_args['hierarchical_attn'] = hierarchical_attn
-    else:
-        net_args['use_t5'] = use_t5
-
-    if subgraph:
-        net = CopySummParagraph(**net_args)
-    else:
-        net = CopySummGAT(**net_args)
-    if load_from is not None:
-        abs_ckpt = load_best_ckpt(load_from)
-        net.load_state_dict(abs_ckpt)
+    net_args = csg_net_args
+    net_args['configdgm'] = configdgm
+    net_args['configIDGL'] = configIDGL
 
     return net, net_args
 
@@ -199,8 +160,7 @@ def configure_training_multitask(opt, lr, clip_grad, lr_decay, batch_size, mask_
     return criterion, train_params
 
 
-def build_batchers_bert(cuda, debug, bert_model):
-
+def build_batchers_bert(cuda, debug, bert_model='roberta-base'):
     tokenizer = RobertaTokenizer.from_pretrained(bert_model)
 
     # mul didn't receive enough arguments to evaluate (missing batch)
@@ -240,14 +200,13 @@ def build_batchers_bert(cuda, debug, bert_model):
 def main(args):
     # create data batcher, vocabulary
     # batcher
-    if args.bert:
-        import logging
-        logging.basicConfig(level=logging.ERROR)
+    import logging
+    logging.basicConfig(level=logging.ERROR)
 
-    train_batcher, val_batcher, word2id = build_batchers_bert(args.cuda, args.debug, args.bertmodel)
+    train_batcher, val_batcher, word2id = build_batchers_bert(args.cuda, args.debug)
 
-    net, net_args = configure_net(len(word2id), args.emb_dim,
-                                  args.n_hidden, args.bi, args.n_layer, args.load_from, args.bert, args.max_art)
+    net, net_args = configure_net(args.configdgm, args.configIDGL, len(word2id), args.emb_dim,
+                                  args.n_hidden, args.bi, args.n_layer, args.max_art)
 
     criterion, train_params = configure_training(
         'adam', args.lr, args.clip, args.decay, args.batch, args.bert
@@ -261,7 +220,6 @@ def main(args):
     meta = {}
     meta['net'] = 'base_abstractor'
     meta['net_args'] = net_args
-    meta['traing_params'] = train_params
     with open(join(args.path, 'meta.json'), 'w') as f:
         json.dump(meta, f, indent=4)
 
@@ -274,11 +232,9 @@ def main(args):
     else:
         val_fn = basic_validate(net, criterion)
     grad_fn = get_basic_grad_fn(net, args.clip)
-    print(net._embedding.weight.requires_grad)
 
     optimizer = optim.AdamW(net.parameters(), **train_params['optimizer'][1])
 
-    # optimizer = optim.Adagrad(net.parameters(), **train_params['optimizer'][1])
     scheduler = ReduceLROnPlateau(optimizer, 'min', verbose=True,
                                   factor=args.decay, min_lr=0,
                                   patience=args.lr_p)
@@ -325,10 +281,12 @@ if __name__ == '__main__':
                         help='attention type')
     parser.add_argument('--feat', action='append', default=['node_freq'])
     parser.add_argument('--bert', action='store_true', help='use bert!')
-    parser.add_argument('--bertmodel', action='store', type=str, default='roberta-base',
-                        help='roberta-base')
-    parser.add_argument('--use_t5', action='store', type=bool, default=False,
-                        help='use t5 encoder and decoder instead of LSTM networks')
+    parser.add_argument('--bertmodel', action='store', type=str, default='deep_event_mine/data/bert/scibert_scivocab_cased',
+                        help='pre-trained model file path')
+    parser.add_argument('--configdgm', action='store', default='dgl.yaml',
+                        help='configuration file name for DeepGraphMine e.g. example1.yaml')
+    parser.add_argument('--configIDGL', action='store', default='idgl.yml',
+                        help='configuration file name for IDGL e.g. example2.yaml')
 
     # length limit
     parser.add_argument('--max_art', type=int, action='store', default=1024,

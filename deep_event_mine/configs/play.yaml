@@ -1,5 +1,6 @@
 task_name: mlee
 
+bert_vocab: deep_event_mine/data/bert/scibert_scivocab_cased/vocab.txt
 bert_model: deep_event_mine/data/bert/scibert_scivocab_cased
 model_path: deep_event_mine/data/models/mlee/model/
 saved_params: deep_event_mine/data/models/mlee/mlee.param

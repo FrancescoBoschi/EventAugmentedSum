@@ -13,19 +13,20 @@ from deep_event_mine.nets import deepEM
 from deep_event_mine.utils import utils
 from deep_event_mine.eval.evalEV import write_events
 from deep_event_mine.event_to_graph.standoff2graphs import get_graphs
+from deep_event_mine.loader.prepData import prepdata
 
 
 class DeepGraphMine(nn.Module):
     def __init__(self, config_file):
         super().__init__()
 
-        self.pred_params, self.parameters = configdem.config(config_file)
-        self.device = self.parameters['device']
-        self.deepee_model = deepEM.DeepEM(self.parameters)
+        self.pred_params, self.params = configdem.config(config_file)
+        self.device = self.params['device']
+        self.deepee_model = deepEM.DeepEM(self.params)
 
         # load pretrained weights
         utils.handle_checkpoints(model=self.deepee_model,
-                                 checkpoint_dir=self.parameters['model_path'],
+                                 checkpoint_dir=self.params['model_path'],
                                  params={
                                      'device': self.device
                                  },
@@ -35,9 +36,9 @@ class DeepGraphMine(nn.Module):
         if not os.path.exists(result_dir):
             os.makedirs(result_dir)
 
-        self.a2_files_path = self.parameters['result_dir'] + 'ev-last/ev-tok-ann/'
-        self.mapping_id_tag = self.parameters['mappings']['nn_mapping']['id_tag_mapping']
-        self.node_dim = self.parameters['bert_dim'] * 3 + self.parameters['etype_dim']
+        self.a2_files_path = self.params['result_dir'] + 'ev-last/ev-tok-ann/'
+        self.mapping_id_tag = self.params['mappings']['nn_mapping']['id_tag_mapping']
+        self.node_dim = self.params['bert_dim'] * 3 + self.params['etype_dim']
 
     def pad_nodes_adjs(self, nodes_input, adjs_input):
 
@@ -60,13 +61,15 @@ class DeepGraphMine(nn.Module):
         entities_dict = defaultdict(dict)
         for bb, ner_terms in enumerate(all_ner_terms):
 
-            for sent, ner_term in enumerate(ner_terms):
+                for sent, ner_term in enumerate(ner_terms):
 
-                for index, i_d in ner_term[0].items():
-                    if i_d in feid_mapping[fidss[bb][sent]]:
-                        node_emb = all_ent_embs[bb][sent][index]
-                        correct_index = feid_mapping[fidss[bb][sent]][i_d]
-                        entities_dict[fidss[bb][sent]][correct_index] = (sent, index, node_emb)
+                    if fidss[bb][sent] in feid_mapping:
+
+                        for index, i_d in ner_term[0].items():
+                            if i_d in feid_mapping[fidss[bb][sent]]:
+                                node_emb = all_ent_embs[bb][sent][index]
+                                correct_index = feid_mapping[fidss[bb][sent]][i_d]
+                                entities_dict[fidss[bb][sent]][correct_index] = (sent, index, node_emb)
 
         # contains a graph for each document in the batch
         # constructed using, events triggers and entities
@@ -113,7 +116,7 @@ class DeepGraphMine(nn.Module):
         is_eval_ev = False
         for batch in tqdm(train_dataloader, desc="Iteration", leave=False):
             eval_data_ids = batch
-            tensors = utils.get_tensors(eval_data_ids, nntrain_data, self.parameters)
+            tensors = utils.get_tensors(eval_data_ids, nntrain_data, self.params)
 
             nn_tokens, nn_ids, nn_token_mask, nn_attention_mask, nn_span_indices, nn_span_labels, nn_span_labels_match_rel, nn_entity_masks, nn_trigger_masks, _, \
             etypes, _ = tensors
@@ -137,7 +140,7 @@ class DeepGraphMine(nn.Module):
                 for data_id in eval_data_ids[0].tolist()
             ]
 
-            ner_out, rel_out, ev_out = self.deepee_model(tensors, self.parameters)
+            ner_out, rel_out, ev_out = self.deepee_model(tensors, self.params)
 
             ner_preds = ner_out['preds']
 
@@ -213,17 +216,16 @@ class DeepGraphMine(nn.Module):
                                         all_sub_to_words=sub_to_wordss,
                                         all_ev_preds=ev_preds,
                                         g_entity_ids_=nntrain_data['g_entity_ids_'],
-                                        params=self.parameters,
-                                        result_dir=self.parameters['result_dir'])
+                                        params=self.params,
+                                        result_dir=self.params['result_dir'])
 
             return all_ner_terms, all_ent_embs, fidss, feid_mapping
         else:
             return all_ner_terms, all_ent_embs, fidss, None
 
     def forward(self, sentences):
-
-        train_data = configdem.prepdata.prep_input_data(self.pred_params['train_data'], self.parameters, sentences0=sentences)
-        nntrain_data, train_dataloader = configdem.read_test_data(train_data, self.parameters)
+        train_data = prepdata.prep_input_data(self.pred_params['train_data'], self.params, sentences0=sentences)
+        nntrain_data, train_dataloader = configdem.read_test_data(train_data, self.params)
         nntrain_data['g_entity_ids_'] = train_data['g_entity_ids_']
 
         all_ner_terms, all_ent_embs, fidss, feid_mapping = self.generate_events(nntrain_data, train_dataloader)

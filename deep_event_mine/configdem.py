@@ -1,10 +1,8 @@
 import torch
 import pickle
-import os
 from torch.utils.data import TensorDataset, DataLoader, SequentialSampler
 
 from deep_event_mine.utils import utils
-from deep_event_mine.loader.prepData import prepdata
 from deep_event_mine.loader.prepNN import prep4nn
 
 
@@ -52,6 +50,7 @@ def config(config_file):
     parameters['freeze_bert'] = pred_params['freeze_bert']
     parameters['compute_metrics'] = pred_params['compute_metrics']
     parameters['bert_model'] = pred_params['bert_model']
+    parameters['bert_vocab'] = pred_params['bert_vocab']
     parameters['result_dir'] = pred_params['result_dir']
     parameters['model_path'] = pred_params['model_path']
     parameters['raw_text'] = pred_params['raw_text']

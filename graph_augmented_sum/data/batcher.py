@@ -3,8 +3,7 @@ import random
 from collections import defaultdict
 
 from toolz.sandbox import unzip
-from cytoolz import curry, concat, compose
-from cytoolz import curried
+from cytoolz import curry, concat
 
 import torch
 import torch.multiprocessing as mp
@@ -152,6 +151,11 @@ def batchify_fn_copy_bert(tokenizer, data, cuda=True):
     sources, ext_srcs, tar_ins, targets, src_lens = (data[0],) + tuple(map(list, unzip(data[1])))
     raw_sentences = data[2]
     article_ids = data[3]
+
+    sentences = {}
+    for art, article_id in enumerate(article_ids):
+        sentences[article_id] = raw_sentences[art]
+
     sources = [src for src in sources]
     ext_srcs = [ext for ext in ext_srcs]
 
@@ -164,9 +168,8 @@ def batchify_fn_copy_bert(tokenizer, data, cuda=True):
     ext_vsize = ext_src.max().item() + 1
     if ext_vsize < len(tokenizer.encoder):
         ext_vsize = len(tokenizer.encoder)
-    fw_args = (source, src_lens, tar_in, ext_src, ext_vsize, raw_sentences, article_ids)
-    loss_args = (target,)
-    return fw_args, loss_args
+    fw_args = (source, src_lens, tar_in, ext_src, ext_vsize, target, sentences)
+    return fw_args
 
 
 def get_bert_align_dict(filename='preprocessing/bertalign-base.pkl'):

@@ -259,8 +259,8 @@ class BasicPipeline(object):
 
     def batches(self):
         while True:
-            for fw_args, bw_args in self._train_batcher(self._batch_size):
-                yield fw_args, bw_args
+            for fw_args in self._train_batcher(self._batch_size):
+                yield fw_args
             self._n_epoch += 1
 
     def get_loss_args(self, net_out, bw_args):
@@ -274,20 +274,11 @@ class BasicPipeline(object):
         # forward pass of model
         self._net.train()
         #self._net.zero_grad()
-        fw_args, bw_args = next(self._batches)
 
-        sentences = OrderedDict()
-        for art, article_id in enumerate(fw_args[6]):
-            sentences[article_id] = fw_args[5][art]
+        fw_args = next(self._batches)
 
-        net_out = self._net(*fw_args)
+        loss = self._net(*fw_args)
 
-        # get logs and output for logging, backward
-        log_dict = {}
-        loss_args = self.get_loss_args(net_out, bw_args)
-
-        # backward and update ( and optional gradient monitoring )
-        loss = self._criterion(*loss_args).mean()
         loss.backward()
         log_dict['loss'] = loss.item()
 
