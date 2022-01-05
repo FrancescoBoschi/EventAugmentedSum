@@ -90,6 +90,7 @@ class EventAugmentedSumm(nn.Module):
         # Indicate either an example is in onging state (i.e., 1) or stopping state (i.e., 0)
         batch_stop_indicators = to_cuda(torch.ones(self.batch_size, dtype=torch.uint8), self.device)
         while (iter_ == 0 or torch.sum(batch_stop_indicators).item() > 0) and iter_ < max_iter_:
+            print(loss)
             iter_ += 1
             batch_last_iters += batch_stop_indicators
 

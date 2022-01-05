@@ -76,11 +76,10 @@ class Graph(nn.Module):
 
             return raw_adj, adj
 
-
     def prepare_init_graph(self, adj, node_size, node_lens):
 
         # 1 if we don't exceed length 0 if we need to pad. size e.g. (16, 327)
         # e.g. context_mask[0] = [1., 1., ....., 0]
         nodes_mask = create_mask(node_lens, node_size, device=self.device)
 
-        return nodes_mask, adj
+        return adj, nodes_mask

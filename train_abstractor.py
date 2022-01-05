@@ -179,7 +179,7 @@ def build_batchers_bert(cuda, debug, bert_model='roberta-base'):
 
     # coll_fn is needed to filter out too short abstracts (<4) and articles (<5)
     train_loader = DataLoader(
-        PubmedDataset('play', DATA_DIR), batch_size=BUCKET_SIZE,
+        PubmedDataset('play2', DATA_DIR), batch_size=BUCKET_SIZE,
         shuffle=not debug,
         num_workers=4 if cuda and not debug else 0,
         collate_fn=coll_fn
@@ -187,7 +187,7 @@ def build_batchers_bert(cuda, debug, bert_model='roberta-base'):
     train_batcher = BucketedGenerater(train_loader, prepro, sort_key, batchify,
                                       single_run=False, fork=not debug)
     val_loader = DataLoader(
-        PubmedDataset('play', DATA_DIR), batch_size=BUCKET_SIZE,
+        PubmedDataset('play2', DATA_DIR), batch_size=BUCKET_SIZE,
         shuffle=False, num_workers=4 if cuda and not debug else 0,
         collate_fn=coll_fn
     )
@@ -289,7 +289,7 @@ if __name__ == '__main__':
                         help='configuration file name for IDGL e.g. example2.yaml')
 
     # length limit
-    parser.add_argument('--max_art', type=int, action='store', default=1024,
+    parser.add_argument('--max_art', type=int, action='store', default=6000,
                         help='maximun words in a single article sentence')
     parser.add_argument('--max_abs', type=int, action='store', default=150,
                         help='maximun words in a single abstract sentence')

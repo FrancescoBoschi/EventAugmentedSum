@@ -83,7 +83,6 @@ def prepro_fn_copy_bert(tokenizer, max_src_len, max_tgt_len, batch):
     We consider tuple = batch[i] the tuple corresponding to the i-th document
     tuple[0]: list of all sentences in the article
     """
-    assert max_src_len in [512, 768, 1024, 1536, 2048]
 
     def prepro_one(sample):
         source, target, article_id = sample

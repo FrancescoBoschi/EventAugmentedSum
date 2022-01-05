@@ -28,6 +28,7 @@ class GraphLearner(nn.Module):
             print('[ Multi-perspective {} GraphLearner: {} ]'.format(metric_type, num_pers))
 
         elif metric_type == 'weighted_cosine':
+            # num_pers is the number of perspectives p
             self.weight_tensor = torch.Tensor(num_pers, input_size)
             self.weight_tensor = nn.Parameter(nn.init.xavier_uniform_(self.weight_tensor))
             print('[ Multi-perspective {} GraphLearner: {} ]'.format(metric_type, num_pers))
