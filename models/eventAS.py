@@ -61,11 +61,6 @@ class EventAugmentedSumm(nn.Module):
         node_vec = torch.relu(network.encoder.graph_encoders[0](init_node_vec, cur_adj))
         node_vec = F.dropout(node_vec, network.dropout, training=network.training)
 
-        # Add mid GNN layers
-        for encoder in network.encoder.graph_encoders[1:-1]:
-            node_vec = torch.relu(encoder(node_vec, cur_adj))
-            node_vec = F.dropout(node_vec, network.dropout, training=network.training)
-
         node_vec = network.encoder.graph_encoders[-1](node_vec, cur_adj)
 
         loss1 = self.csg_net(artinfo, absinfo, node_vec, nodes_num)
@@ -90,7 +85,6 @@ class EventAugmentedSumm(nn.Module):
         # Indicate either an example is in onging state (i.e., 1) or stopping state (i.e., 0)
         batch_stop_indicators = to_cuda(torch.ones(self.batch_size, dtype=torch.uint8), self.device)
         while (iter_ == 0 or torch.sum(batch_stop_indicators).item() > 0) and iter_ < max_iter_:
-            print(loss)
             iter_ += 1
             batch_last_iters += batch_stop_indicators
 

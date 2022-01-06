@@ -1,6 +1,6 @@
 """ train the abstractor"""
 from graph_augmented_sum.training import get_basic_grad_fn, basic_validate
-from graph_augmented_sum.training import BasicPipeline, BasicTrainer, MultiTaskPipeline, MultiTaskTrainer
+from graph_augmented_sum.training import BasicPipeline, BasicTrainer
 import argparse
 import json
 import os, re
@@ -179,7 +179,7 @@ def build_batchers_bert(cuda, debug, bert_model='roberta-base'):
 
     # coll_fn is needed to filter out too short abstracts (<4) and articles (<5)
     train_loader = DataLoader(
-        PubmedDataset('play2', DATA_DIR), batch_size=BUCKET_SIZE,
+        PubmedDataset('play', DATA_DIR), batch_size=BUCKET_SIZE,
         shuffle=not debug,
         num_workers=4 if cuda and not debug else 0,
         collate_fn=coll_fn

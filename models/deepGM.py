@@ -40,11 +40,7 @@ class DeepGraphMine(nn.Module):
         self.mapping_id_tag = self.params['mappings']['nn_mapping']['id_tag_mapping']
         self.node_dim = self.params['bert_dim'] * 3 + self.params['etype_dim']
 
-    def pad_nodes_adjs(self, nodes_input, adjs_input):
-
-        nodes_num = [_input.size(0) for _input in nodes_input]
-        # max number of nodes
-        max_len = max(nodes_num)
+    def pad_nodes_adjs(self, nodes_input, adjs_input, max_len):
 
         nodes_output = []
         adjs_output = []
@@ -52,9 +48,12 @@ class DeepGraphMine(nn.Module):
             nodes_output.append(F.pad(node_input, pad=(0, 0, 0, max_len - node_input.shape[0])))
             adjs_output.append(F.pad(adj_input, pad=(0, max_len - node_input.shape[0], 0, max_len - node_input.shape[0])))
 
-        return nodes_output, adjs_output, nodes_num
+        return nodes_output, adjs_output
 
     def embeddings_for_entities(self, all_ner_terms, all_ent_embs, fidss, feid_mapping):
+
+        # article ids of the documents in the batch
+        articles_ids = set([item for sublist in fidss for item in sublist])
 
         # create a dictionary for each document in the batch
         # where we store the node embedding for each entity
@@ -73,16 +72,26 @@ class DeepGraphMine(nn.Module):
 
         # contains a graph for each document in the batch
         # constructed using, events triggers and entities
-        all_graphs = get_graphs(self.a2_files_path)
+        all_graphs = get_graphs(self.a2_files_path, articles_ids)
+        nodes_num = []
         for doc_id, graphs in all_graphs.items():
 
-            full_graph = networkx.DiGraph(source_doc=doc_id)
-            full_graph.add_node('master_node')
+            # if the graph contains at least 1 event and it's not empty
+            if len(graphs) > 0:
+                full_graph = networkx.DiGraph(source_doc=doc_id)
+                full_graph.add_node('master_node')
 
-            for graph in graphs:
-                full_graph = networkx.compose(full_graph, graph)
+                for graph in graphs:
+                    full_graph = networkx.compose(full_graph, graph)
 
-            all_graphs[doc_id] = full_graph
+                all_graphs[doc_id] = full_graph
+                nodes_num.append(len(full_graph.nodes))
+
+            else:
+                full_graph = networkx.DiGraph(source_doc=doc_id)
+                full_graph.add_node('master_node')
+                nodes_num.append(0)
+                all_graphs[doc_id] = full_graph
 
         init_nodes_vec = []
         init_adjs = []
@@ -93,9 +102,10 @@ class DeepGraphMine(nn.Module):
 
             init_adjs.append(torch.from_numpy(networkx.adjacency_matrix(graph).todense()))
 
-        init_nodes_vec, init_adjs, nodes_num = self.pad_nodes_adjs(init_nodes_vec, init_adjs)
+        init_nodes_vec, init_adjs = self.pad_nodes_adjs(init_nodes_vec, init_adjs, max(nodes_num))
         batch_nodes_vec = torch.stack(init_nodes_vec, 0)
         batch_adjs = torch.stack(init_adjs, 0)
+        batch_adjs = batch_adjs.float()
 
         return batch_nodes_vec, batch_adjs, nodes_num
 

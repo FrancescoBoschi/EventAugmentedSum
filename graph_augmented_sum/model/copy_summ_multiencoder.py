@@ -141,8 +141,6 @@ class CopySummIDGL(Seq2SeqSumm):
         # the token embeddings W_6 * h_k in the article e.g. (32, 768)
         attention, init_dec_states = self.encode(article, art_lens)
 
-        print(attention.size())
-
         sw_mask = None
         ext_info = None
 

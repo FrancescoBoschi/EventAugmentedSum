@@ -48,79 +48,85 @@ def find_span_line(text: str, span_start: int, span_end: int) -> int:
     return start_line
 
 
-def get_graphs(files_path):
+def get_graphs(files_path, articles_ids):
 
     graphs_doc = {}
     datafiles = datautils.data_files(files_path)
 
     for datafile in datafiles:
-        entities, events = datautils.load_document(datafile)
+        if datafile.base_name in articles_ids:
+            entities, events = datautils.load_document(datafile)
 
-        evs_graph = {}
-        arguments_list = []
-        for event in events.values():
-            evs_graph[event.id] = {}
-            args_dict = {}
-            for argument, role in event.arguments:
-                if type(argument) is not datautils.StandoffEntity:
-                    args_dict[argument.trigger.id] = {}
-                    args_dict[argument.trigger.id]['role'] = role
-                    args_dict[argument.trigger.id]['arguments'] = evs_graph[argument.id]['arguments']
-                else:
-                    args_dict[argument.id] = {}
-                    args_dict[argument.id]['role'] = role
+            evs_graph = {}
+            arguments_list = []
+            for event in events.values():
+                evs_graph[event.id] = {}
+                args_dict = {}
+                for argument, role in event.arguments:
+                    if type(argument) is not datautils.StandoffEntity:
+                        args_dict[argument.trigger.id] = {}
+                        args_dict[argument.trigger.id]['role'] = role
+                        args_dict[argument.trigger.id]['arguments'] = evs_graph[argument.id]['arguments']
+                    else:
+                        args_dict[argument.id] = {}
+                        args_dict[argument.id]['role'] = role
 
-                arguments_list.append(argument.id)
+                    arguments_list.append(argument.id)
 
-            evs_graph[event.id]['arguments'] = args_dict
-            evs_graph[event.id]['trigger'] = event.trigger.id
+                evs_graph[event.id]['arguments'] = args_dict
+                evs_graph[event.id]['trigger'] = event.trigger.id
 
-        arguments_set = set(arguments_list)
+            arguments_set = set(arguments_list)
 
-        all_graphs = []
-        for ev_id, ev in evs_graph.items():
+            all_graphs = []
+            for ev_id, ev in evs_graph.items():
 
-            if ev_id not in arguments_set:
-                graph = networkx.DiGraph(source_doc=datafile.base_name, dataset=files_path)
+                if ev_id not in arguments_set:
+                    graph = networkx.DiGraph(source_doc=datafile.base_name, dataset=files_path)
 
-                trig = entities[ev['trigger']]
-                graph.add_node(trig.id, type=trig.type, name=trig.name)
+                    trig = entities[ev['trigger']]
+                    graph.add_node(trig.id, type=trig.type, name=trig.name)
 
-                for argg_id, argg in ev['arguments'].items():
-                    ent = entities[argg_id]
+                    for argg_id, argg in ev['arguments'].items():
+                        ent = entities[argg_id]
 
-                    graph.add_node(ent.id, type=ent.type, name=ent.name)
-                    graph.add_edge(trig.id, ent.id, key=argg['role'])
+                        graph.add_node(ent.id, type=ent.type, name=ent.name)
+                        graph.add_edge(trig.id, ent.id, key=argg['role'])
 
-                    if 'arguments' in argg:
-                        arg_nest1 = argg['arguments']
+                        if 'arguments' in argg:
+                            arg_nest1 = argg['arguments']
 
-                        for arg_nest1_id, arg_nest1_obj in arg_nest1.items():
-                            ent_nest1 = entities[arg_nest1_id]
-                            graph.add_node(ent_nest1.id, type=ent_nest1.type, name=ent_nest1.name)
-                            graph.add_edge(ent.id, ent_nest1.id, key=arg_nest1_obj['role'])
+                            for arg_nest1_id, arg_nest1_obj in arg_nest1.items():
+                                ent_nest1 = entities[arg_nest1_id]
+                                graph.add_node(ent_nest1.id, type=ent_nest1.type, name=ent_nest1.name)
+                                graph.add_edge(ent.id, ent_nest1.id, key=arg_nest1_obj['role'])
 
-                            if 'arguments' in arg_nest1_obj:
-                                arg_nest2 = arg_nest1_obj['arguments']
-                                for arg_nest2_id, arg_nest2_obj in arg_nest2.items():
+                                if 'arguments' in arg_nest1_obj:
+                                    arg_nest2 = arg_nest1_obj['arguments']
+                                    for arg_nest2_id, arg_nest2_obj in arg_nest2.items():
 
-                                    ent_nest2 = entities[arg_nest2_id]
-                                    graph.add_node(ent_nest2.id, type=ent_nest2.type, name=ent_nest2.name)
-                                    graph.add_edge(ent_nest1.id, ent_nest2.id, key=arg_nest2_obj['role'])
+                                        ent_nest2 = entities[arg_nest2_id]
+                                        graph.add_node(ent_nest2.id, type=ent_nest2.type, name=ent_nest2.name)
+                                        graph.add_edge(ent_nest1.id, ent_nest2.id, key=arg_nest2_obj['role'])
 
-                                if 'arguments' in arg_nest2_obj:
-                                    arg_nest3 = arg_nest2_obj['arguments']
-                                    for arg_nest3_id, arg_nest3_obj in arg_nest3.items():
-                                        ent_nest3 = entities[arg_nest3_id]
-                                        graph.add_node(ent_nest3.id, type=ent_nest3.type, name=ent_nest3.name)
-                                        graph.add_edge(ent_nest2.id, ent_nest3.id, key=arg_nest3_obj['role'])
+                                    if 'arguments' in arg_nest2_obj:
+                                        arg_nest3 = arg_nest2_obj['arguments']
+                                        for arg_nest3_id, arg_nest3_obj in arg_nest3.items():
+                                            ent_nest3 = entities[arg_nest3_id]
+                                            graph.add_node(ent_nest3.id, type=ent_nest3.type, name=ent_nest3.name)
+                                            graph.add_edge(ent_nest2.id, ent_nest3.id, key=arg_nest3_obj['role'])
 
-                graph.add_node('master_node')
-                for node in graph.nodes:
-                    graph.add_edge('master_node', node, key='special')
-                all_graphs.append(graph)
+                    graph.add_node('master_node')
+                    for node in graph.nodes:
+                        graph.add_edge('master_node', node, key='special')
+                    all_graphs.append(graph)
 
-        graphs_doc[datafile.base_name] = all_graphs
+            graphs_doc[datafile.base_name] = all_graphs
+
+    # for documents where we fail to extract graphs
+    for artid in articles_ids:
+        if artid not in graphs_doc:
+            graphs_doc[artid] = []
 
     return graphs_doc
 
