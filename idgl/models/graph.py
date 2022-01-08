@@ -20,12 +20,7 @@ class Graph(nn.Module):
         self.graph_skip_conn = config['graph_skip_conn']
         self.graph_include_self = config.get('graph_include_self', True)
         self.scalable_run = config.get('scalable_run', False)
-
-        if not config['no_cuda'] and torch.cuda.is_available():
-            print('[ Using CUDA ]')
-            self.device = torch.device('cuda' if config['cuda_id'] < 0 else 'cuda:%d' % config['cuda_id'])
-        else:
-            self.device = torch.device('cpu')
+        self.device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
 
         self.encoder = GCN(nfeat=num_feat,
                            nhid=hidden_size,

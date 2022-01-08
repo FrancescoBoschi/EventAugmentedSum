@@ -7,7 +7,7 @@ loguru
 tabulate
 pyyaml
 texttable
-sklearn
+scikit-learn==0.21.3
 pytorch-nlp
 tqdm
 requests
