@@ -248,7 +248,7 @@ if __name__ == '__main__':
     parser.add_argument('--bert', action='store_true', help='use bert!')
     parser.add_argument('--bertmodel', action='store', type=str, default='deep_event_mine/data/bert/scibert_scivocab_cased',
                         help='pre-trained model file path')
-    parser.add_argument('--configdgm', action='store', default='dgl.yaml',
+    parser.add_argument('--configdgm', action='store', default='play.yaml',
                         help='configuration file name for DeepGraphMine e.g. example1.yaml')
     parser.add_argument('--configIDGL', action='store', default='idgl.yml',
                         help='configuration file name for IDGL e.g. example2.yaml')
