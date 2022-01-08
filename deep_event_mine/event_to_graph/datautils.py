@@ -69,7 +69,7 @@ class StandoffEvent:
         return StandoffEvent(_id, entities[_trigger], resolved_args)
 
 
-def load_document(doc: DataFile) -> tuple[dict[str, StandoffEntity], dict[str, StandoffEvent]]:
+def load_document(doc):
 
     with open(doc.a1) as a1_file, open(doc.a2) as a2_file:
         annotations = list(itertools.chain(a1_file, a2_file))

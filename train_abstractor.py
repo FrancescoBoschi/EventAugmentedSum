@@ -153,7 +153,7 @@ def build_batchers_bert(cuda, debug, bert_model='roberta-base'):
     train_batcher = BucketedGenerater(train_loader, prepro, sort_key, batchify,
                                       single_run=False, fork=not debug)
     val_loader = DataLoader(
-        PubmedDataset('play2', DATA_DIR), batch_size=BUCKET_SIZE,
+        PubmedDataset('play', DATA_DIR), batch_size=BUCKET_SIZE,
         shuffle=False, num_workers=4 if cuda and not debug else 0,
         collate_fn=coll_fn
     )
