@@ -75,10 +75,9 @@ def configure_net(configdgm, configIDGL, vocab_size, emb_dim,
     csg_net_args['n_hidden'] = n_hidden
     csg_net_args['bidirectional'] = bidirectional
     csg_net_args['n_layer'] = n_layer
-    csg_net_args['batch_size'] = batch_size
     csg_net_args['bert_length'] = bert_length
 
-    net = EventAugmentedSumm(configdgm, configIDGL, csg_net_args)
+    net = EventAugmentedSumm(configdgm, configIDGL, csg_net_args, batch_size)
 
     net_args = csg_net_args
     net_args['configdgm'] = configdgm

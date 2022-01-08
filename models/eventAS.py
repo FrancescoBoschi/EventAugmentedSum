@@ -17,7 +17,7 @@ from graph_augmented_sum.model.copy_summ_multiencoder import CopySummIDGL
 
 
 class EventAugmentedSumm(nn.Module):
-    def __init__(self, configdgm, configIDGL, csg_net_args):
+    def __init__(self, configdgm, configIDGL, csg_net_args, batch_size):
         super().__init__()
 
         self.deepGM = DeepGraphMine(configdgm)
@@ -25,7 +25,7 @@ class EventAugmentedSumm(nn.Module):
         self.IDGLnetwork = Graph(self.configIDGL, self.deepGM.node_dim)
         self.csg_net = CopySummIDGL(**csg_net_args)
         self.device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
-        self.batch_size = csg_net_args['batch_size']
+        self.batch_size = batch_size
 
     def forward(self, article, art_lens, abstract, extend_art, extend_vsize, target, sentences):
 
