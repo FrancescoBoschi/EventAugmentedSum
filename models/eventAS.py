@@ -25,11 +25,11 @@ class EventAugmentedSumm(nn.Module):
         self.IDGLnetwork = Graph(self.configIDGL, self.deepGM.node_dim)
         self.csg_net = CopySummIDGL(**csg_net_args)
         self.device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
+        self.batch_size = csg_net_args['batch_size']
 
     def forward(self, article, art_lens, abstract, extend_art, extend_vsize, target, sentences):
 
         batch_nodes_vec, batch_adjs, nodes_num = self.deepGM(sentences)
-        self.batch_size = batch_nodes_vec.size(0)
 
         artinfo = (article, art_lens, extend_art, extend_vsize)
         absinfo = (abstract, target)
@@ -63,6 +63,8 @@ class EventAugmentedSumm(nn.Module):
 
         node_vec = network.encoder.graph_encoders[-1](node_vec, cur_adj)
 
+        # compute L_pred, the loss corresponding to the prediction task
+        # in our case the log-likelihood loss for the summarization task
         loss1 = self.csg_net(artinfo, absinfo, node_vec, nodes_num)
 
         loss1 += self.add_batch_graph_loss(cur_raw_adj, init_node_vec)

@@ -16,7 +16,6 @@ from torch.nn import functional as F
 from torch.optim.lr_scheduler import ReduceLROnPlateau
 from torch.utils.data import DataLoader, Dataset
 
-from deep_event_mine.bert.tokenization import BertTokenizer
 
 from models.eventAS import EventAugmentedSumm
 from graph_augmented_sum.model.util import sequence_loss
@@ -24,7 +23,6 @@ from graph_augmented_sum.model.util import sequence_loss
 from graph_augmented_sum.data.batcher import coll_fn, prepro_fn
 from graph_augmented_sum.data.batcher import prepro_fn_copy_bert, convert_batch_copy_bert, batchify_fn_copy_bert
 from graph_augmented_sum.data.batcher import BucketedGenerater
-from graph_augmented_sum.training import multitask_validate
 
 import pickle
 
@@ -68,7 +66,7 @@ def get_bert_align_dict(filename='preprocessing/bertalign-base.pkl'):
 
 
 def configure_net(configdgm, configIDGL, vocab_size, emb_dim,
-                  n_hidden, bidirectional, n_layer, bert_length=512):
+                  n_hidden, bidirectional, n_layer, batch_size, bert_length):
 
     csg_net_args = {}
     csg_net_args['vocab_size'] = vocab_size
@@ -77,6 +75,7 @@ def configure_net(configdgm, configIDGL, vocab_size, emb_dim,
     csg_net_args['n_hidden'] = n_hidden
     csg_net_args['bidirectional'] = bidirectional
     csg_net_args['n_layer'] = n_layer
+    csg_net_args['batch_size'] = batch_size
     csg_net_args['bert_length'] = bert_length
 
     net = EventAugmentedSumm(configdgm, configIDGL, csg_net_args)
@@ -122,39 +121,6 @@ def configure_training(opt, lr, clip_grad, lr_decay, batch_size, bert):
 
     def criterion(logits, targets):
         return sequence_loss(logits, targets, nll, pad_idx=PAD)
-
-    print('pad id:', PAD)
-    return criterion, train_params
-
-
-def configure_training_multitask(opt, lr, clip_grad, lr_decay, batch_size, mask_type, bert):
-    """ supports Adam optimizer only"""
-    assert opt in ['adam', 'adagrad']
-    opt_kwargs = {}
-    opt_kwargs['lr'] = lr
-
-    train_params = {}
-    if opt == 'adagrad':
-        opt_kwargs['initial_accumulator_value'] = 0.1
-    train_params['optimizer'] = (opt, opt_kwargs)
-    train_params['clip_grad_norm'] = clip_grad
-    train_params['batch_size'] = batch_size
-    train_params['lr_decay'] = lr_decay
-
-    if bert:
-        PAD = 1
-    nll = lambda logit, target: F.nll_loss(logit, target, reduce=False)
-
-    bce = lambda logit, target: F.binary_cross_entropy(logit, target, reduce=False)
-
-    def criterion(logits1, logits2, targets1, targets2):
-        aux_loss = None
-        for logit in logits2:
-            if aux_loss is None:
-                aux_loss = sequence_loss(logit, targets2, bce, pad_idx=-1, if_aux=True, fp16=False).mean()
-            else:
-                aux_loss += sequence_loss(logit, targets2, bce, pad_idx=-1, if_aux=True, fp16=False).mean()
-        return sequence_loss(logits1, targets1, nll, pad_idx=PAD).mean(), aux_loss
 
     print('pad id:', PAD)
     return criterion, train_params
@@ -206,7 +172,7 @@ def main(args):
     train_batcher, val_batcher, word2id = build_batchers_bert(args.cuda, args.debug)
 
     net, net_args = configure_net(args.configdgm, args.configIDGL, len(word2id), args.emb_dim,
-                                  args.n_hidden, args.bi, args.n_layer, args.max_art)
+                                  args.n_hidden, args.bi, args.n_layer, args.batch, args.max_art)
 
     criterion, train_params = configure_training(
         'adam', args.lr, args.clip, args.decay, args.batch, args.bert
@@ -217,9 +183,11 @@ def main(args):
         os.makedirs(args.path)
     with open(join(args.path, 'vocab.pkl'), 'wb') as f:
         pkl.dump(word2id, f, pkl.HIGHEST_PROTOCOL)
+
     meta = {}
     meta['net'] = 'base_abstractor'
     meta['net_args'] = net_args
+    meta['train_args'] = train_params
     with open(join(args.path, 'meta.json'), 'w') as f:
         json.dump(meta, f, indent=4)
 
@@ -227,10 +195,7 @@ def main(args):
     if args.cuda:
         net = net.cuda()
 
-    if 'soft' in args.mask_type and args.gat:
-        val_fn = multitask_validate(net, criterion)
-    else:
-        val_fn = basic_validate(net, criterion)
+    val_fn = basic_validate(net)
     grad_fn = get_basic_grad_fn(net, args.clip)
 
     optimizer = optim.AdamW(net.parameters(), **train_params['optimizer'][1])

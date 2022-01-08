@@ -5,7 +5,6 @@ from os.path import join
 from time import time
 from datetime import timedelta
 from itertools import starmap
-from collections import OrderedDict
 
 from cytoolz import curry, reduce, concat
 
@@ -13,16 +12,12 @@ import torch
 from torch.nn.utils import clip_grad_norm_
 from torch.optim.lr_scheduler import ReduceLROnPlateau
 import tensorboardX
-from graph_augmented_sum.utils import PAD, UNK, START, END
-from graph_augmented_sum.metric import compute_rouge_l, compute_rouge_n, compute_rouge_l_summ
-from nltk import sent_tokenize
+
 import logging
 logging.getLogger('transformers.tokenization_utils').setLevel(logging.ERROR)
 logging.getLogger('transformers.tokenization_utils').disabled = True
 logging.basicConfig(level=logging.ERROR)
-from copy import deepcopy
-from graph_augmented_sum.model.util import sequence_loss
-from torch.nn import functional as F
+
 
 
 def get_basic_grad_fn(net, clip_grad, max_grad=1e2):
@@ -49,15 +44,13 @@ def get_loss_args(net_out, bw_args):
     return loss_args
 
 @curry
-def compute_loss(net, criterion, fw_args, loss_args):
-    net_out = net(*fw_args)
-    all_loss_args = get_loss_args(net_out, loss_args)
-    loss = criterion(*all_loss_args)
+def compute_loss(net, fw_args):
+    loss = net(*fw_args)
     return loss
 
 @curry
-def val_step(loss_step, fw_args, loss_args):
-    loss = loss_step(fw_args, loss_args)
+def val_step(loss_step, fw_args):
+    loss = loss_step(fw_args)
     try:
         n_data = loss.size(0)
         return n_data, loss.sum().item()
@@ -65,23 +58,14 @@ def val_step(loss_step, fw_args, loss_args):
         n_data = 1
         return n_data, loss.item()
 
-@curry
-def multitask_val_step(loss_step, fw_args, loss_args):
-    losses = loss_step(fw_args, loss_args)
-    try:
-        n_data = losses[0].size(0)
-        return n_data, losses[0].sum().item(), losses[1].sum().item()
-    except IndexError:
-        n_data = 1
-        return n_data, losses[0].item(), losses[1].item()
 
 @curry
-def basic_validate(net, criterion, val_batches):
+def basic_validate(net, val_batches):
     print('running validation ... ', end='')
     net.eval()
     start = time()
     with torch.no_grad():
-        validate_fn = val_step(compute_loss(net, criterion))
+        validate_fn = val_step(compute_loss(net))
         n_data, tot_loss = reduce(
             lambda a, b: (a[0]+b[0], a[1]+b[1]),
             starmap(validate_fn, val_batches),
@@ -94,149 +78,6 @@ def basic_validate(net, criterion, val_batches):
     )
     print('validation loss: {:.4f} ... '.format(val_loss))
     return {'loss': val_loss}
-
-@curry
-def multitask_validate(net, criterion, val_batches):
-    print('running validation ... ', end='')
-    net.eval()
-    start = time()
-    with torch.no_grad():
-        validate_fn = multitask_val_step(compute_loss(net, criterion))
-        n_data, tot_loss, tot_aux_loss = reduce(
-            lambda a, b: (a[0]+b[0], a[1]+b[1], a[2]+b[2]),
-            starmap(validate_fn, val_batches),
-            (0, 0, 0)
-        )
-    val_loss = tot_loss / n_data
-    val_aux_loss = tot_aux_loss / n_data
-    print(
-        'validation finished in {}                                    '.format(
-            timedelta(seconds=int(time()-start)))
-    )
-    print('validation loss: {:.4f} ... '.format(val_loss))
-    print('validation auxilary loss: {:.4f} ... '.format(val_aux_loss))
-    return {'loss': val_loss, 'aux_loss': val_aux_loss}
-
-
-@curry
-def rl_validate(net, val_batches, reward_func=None, reward_coef = 0.01, local_coh_func=None, local_coh_coef=0.005, bert=False):
-    print('running validation ... ', end='')
-    if bert:
-        tokenizer = net._bert_model._tokenizer
-        end = tokenizer.encoder[tokenizer._eos_token]
-        unk = tokenizer.encoder[tokenizer._unk_token]
-    def argmax(arr, keys):
-        return arr[max(range(len(arr)), key=lambda i: keys[i].item())]
-    def sum_id2word(raw_article_sents, decs, attns):
-        if bert:
-            dec_sents = []
-            for i, raw_words in enumerate(raw_article_sents):
-                dec = []
-                for id_, attn in zip(decs, attns):
-                    if id_[i] == end:
-                        break
-                    elif id_[i] == unk:
-                        dec.append(argmax(raw_words, attn[i]))
-                    else:
-                        dec.append(id2word[id_[i].item()])
-                dec_sents.append(dec)
-        else:
-            dec_sents = []
-            for i, raw_words in enumerate(raw_article_sents):
-                dec = []
-                for id_, attn in zip(decs, attns):
-                    if id_[i] == END:
-                        break
-                    elif id_[i] == UNK:
-                        dec.append(argmax(raw_words, attn[i]))
-                    else:
-                        dec.append(id2word[id_[i].item()])
-                dec_sents.append(dec)
-        return dec_sents
-    net.eval()
-    start = time()
-    i = 0
-    score = 0
-    score_reward = 0
-    score_local_coh = 0
-    score_r2 = 0
-    score_r1 = 0
-    bl_r2 = []
-    bl_r1 = []
-    with torch.no_grad():
-        for fw_args, bw_args in val_batches:
-            raw_articles = bw_args[0]
-            id2word = bw_args[1]
-            raw_targets = bw_args[2]
-            if reward_func is not None:
-                questions = bw_args[3]
-            greedies, greedy_attns = net.greedy(*fw_args)
-            greedy_sents = sum_id2word(raw_articles, greedies, greedy_attns)
-            bl_scores = []
-            if reward_func is not None:
-                bl_coh_inputs = []
-            if local_coh_func is not None:
-                bl_local_coh_scores = []
-            for baseline, target in zip(greedy_sents, raw_targets):
-                if bert:
-                    text = ''.join(baseline)
-                    baseline = bytearray([tokenizer.byte_decoder[c] for c in text]).decode('utf-8',
-                                                                                                 errors=tokenizer.errors)
-                    baseline = baseline.split(' ')
-                    text = ''.join(target)
-                    target = bytearray([tokenizer.byte_decoder[c] for c in text]).decode('utf-8',
-                                                                                               errors=tokenizer.errors)
-                    target = target.split(' ')
-
-
-                bss = sent_tokenize(' '.join(baseline))
-                if reward_func is not None:
-                    bl_coh_inputs.append(bss)
-
-                bss = [bs.split(' ') for bs in bss]
-                tgs = sent_tokenize(' '.join(target))
-                tgs = [tg.split(' ') for tg in tgs]
-                bl_score = compute_rouge_l_summ(bss, tgs)
-                bl_r1.append(compute_rouge_n(list(concat(bss)), list(concat(tgs)), n=1))
-                bl_r2.append(compute_rouge_n(list(concat(bss)), list(concat(tgs)), n=2))
-                bl_scores.append(bl_score)
-            bl_scores = torch.tensor(bl_scores, dtype=torch.float32, device=greedy_attns[0].device)
-
-            if reward_func is not None:
-                bl_reward_scores = reward_func.score(questions, bl_coh_inputs)
-                bl_reward_scores = torch.tensor(bl_reward_scores, dtype=torch.float32, device=greedy_attns[0].device)
-                score_reward += bl_reward_scores.mean().item() * 100
-
-            reward = bl_scores.mean().item()
-            i += 1
-            score += reward * 100
-            score_r2 += torch.tensor(bl_r2, dtype=torch.float32, device=greedy_attns[0].device).mean().item() * 100
-            score_r1 += torch.tensor(bl_r1, dtype=torch.float32, device=greedy_attns[0].device).mean().item() * 100
-
-
-    val_score = score / i
-    score_r2 = score_r2 / i
-    score_r1 = score_r1 / i
-    if reward_func is not None:
-        val_reward_score = score_reward / i
-    else:
-        val_reward_score = 0
-    val_local_coh_score = 0
-    print(
-        'validation finished in {}                                    '.format(
-            timedelta(seconds=int(time()-start)))
-    )
-    print('validation reward: {:.4f} ... '.format(val_score))
-    print('validation r2: {:.4f} ... '.format(score_r2))
-    print('validation r1: {:.4f} ... '.format(score_r1))
-    if reward_func is not None:
-        print('validation reward: {:.4f} ... '.format(val_reward_score))
-    if local_coh_func is not None:
-        val_local_coh_score = score_local_coh / i
-        print('validation {} reward: {:.4f} ... '.format(local_coh_func.__name__, val_local_coh_score))
-    print('n_data:', i)
-    return {'score': val_score,
-            'score_reward:': val_reward_score}
 
 
 class BasicPipeline(object):
@@ -333,7 +174,6 @@ class BasicTrainer(object):
         self._current_p = 0
         self._best_val = None
 
-
     def log(self, log_dict):
         loss = log_dict['loss'] if 'loss' in log_dict else log_dict['reward']
         if self._running_loss is not None:
@@ -377,13 +217,20 @@ class BasicTrainer(object):
         return val_metric
 
     def checkpoint(self):
+
+        # compute loss on validation set
         val_metric = self.validate()
+
+        # save model weights and optimizer
         self._pipeline.checkpoint(
             join(self._save_dir, 'ckpt'), self._step, val_metric)
         if isinstance(self._sched, ReduceLROnPlateau):
             self._sched.step(val_metric)
         else:
             self._sched.step()
+
+        # check if the number of times in a row that we don't experience an improvement
+        # is greater than patience e.g. 5, if that's the case we interrupt training
         stop = self.check_stop(val_metric)
         return stop
 
@@ -411,6 +258,6 @@ class BasicTrainer(object):
                     stop = self.checkpoint()
                     if stop:
                         break
-            print('Training finised in ', timedelta(seconds=time()-start))
+            print('Training finished in ', timedelta(seconds=time()-start))
         finally:
             self._pipeline.terminate()
