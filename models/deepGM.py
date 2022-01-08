@@ -105,7 +105,7 @@ class DeepGraphMine(nn.Module):
         init_nodes_vec, init_adjs = self.pad_nodes_adjs(init_nodes_vec, init_adjs, max(nodes_num))
         batch_nodes_vec = torch.stack(init_nodes_vec, 0)
         batch_adjs = torch.stack(init_adjs, 0)
-        batch_adjs = batch_adjs.float()
+        batch_adjs = batch_adjs.to(self.device, dtype=torch.float32)
 
         return batch_nodes_vec, batch_adjs, nodes_num
 
