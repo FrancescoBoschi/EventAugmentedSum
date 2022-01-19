@@ -246,3 +246,6 @@ class DeepGraphMine(nn.Module):
 
             return batch_nodes_vec, batch_adjs, nodes_num
 
+        else:
+            return None, None, [0] * len(sentences)
+

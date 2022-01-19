@@ -50,91 +50,96 @@ class EventAugmentedSumm(nn.Module):
         :param out_predictions: save the predictions if True
         """
 
-        network = self.IDGLnetwork
-        network.train(training)
+        if init_adj is not None:
 
-        # norm_init_adj: is the normalized adjacency matrix L^0. size (batch_size, num_nodes, num_nodes) e.g. (5, 2708, 2708)
-        norm_init_adj, node_mask = network.prepare_init_graph(init_adj, init_node_vec.size(1), nodes_num)
+            network = self.IDGLnetwork
+            network.train(training)
 
-        # curr_raw_adj: corresponds to A^(1) (num_nodes, num_nodes) e.g. (2708, 2708)
-        # cur_adj: corresponds to A^~(1) (num_nodes, num_nodes) e.g. (2708, 2708)
-        cur_raw_adj, cur_adj = network.learn_graph(network.graph_learner, init_node_vec, node_mask, network.graph_skip_conn, graph_include_self=network.graph_include_self, init_adj=norm_init_adj)
+            # norm_init_adj: is the normalized adjacency matrix L^0. size (batch_size, num_nodes, num_nodes) e.g. (5, 2708, 2708)
+            norm_init_adj, node_mask = network.prepare_init_graph(init_adj, init_node_vec.size(1), nodes_num)
 
-        # MP(X, A^~(1)) aka GNN_1 (node_num, hidden_size) e.g. (2708, 256)
-        node_vec = torch.relu(network.encoder.graph_encoders[0](init_node_vec, cur_adj))
-        node_vec = F.dropout(node_vec, network.dropout, training=network.training)
+            # curr_raw_adj: corresponds to A^(1) (num_nodes, num_nodes) e.g. (2708, 2708)
+            # cur_adj: corresponds to A^~(1) (num_nodes, num_nodes) e.g. (2708, 2708)
+            cur_raw_adj, cur_adj = network.learn_graph(network.graph_learner, init_node_vec, node_mask, network.graph_skip_conn, graph_include_self=network.graph_include_self, init_adj=norm_init_adj)
 
-        node_vec = network.encoder.graph_encoders[-1](node_vec, cur_adj)
-
-        # compute L_pred, the loss corresponding to the prediction task
-        # in our case the log-likelihood loss for the summarization task
-        loss1 = self.csg_net(artinfo, absinfo, node_vec, nodes_num)
-
-        print('')
-        print('computed summarization loss')
-        print('')
-
-        loss1 += self.add_batch_graph_loss(cur_raw_adj, init_node_vec)
-
-        # first_raw_adj: corresponds to A^(1) (num_nodes, num_nodes) e.g. (2708, 2708)
-        # first_adj: corresponds to A^~(1) (num_nodes, num_nodes) e.g. (2708, 2708)
-        first_raw_adj, first_adj = cur_raw_adj, cur_adj
-
-        # selecting number of iterations of Algorithm 1 by default it's 10
-        max_iter_ = self.configIDGL.get('max_iter', 10)
-
-        # eps_adj: delta in the paper
-        eps_adj = float(self.configIDGL.get('eps_adj', 0)) if training else float(self.configIDGL.get('test_eps_adj', self.configIDGL.get('eps_adj', 0)))
-
-        loss = 0
-        iter_ = 0
-
-        # Indicate the last iteration number for each example
-        batch_last_iters = to_cuda(torch.zeros(self.batch_size, dtype=torch.uint8), self.device)
-        # Indicate either an example is in onging state (i.e., 1) or stopping state (i.e., 0)
-        batch_stop_indicators = to_cuda(torch.ones(self.batch_size, dtype=torch.uint8), self.device)
-        while (iter_ == 0 or torch.sum(batch_stop_indicators).item() > 0) and iter_ < max_iter_:
-
-            print(iter)
-            iter_ += 1
-            batch_last_iters += batch_stop_indicators
-
-            # A^(t-1) (num_nodes, num_nodes) e.g. (2708, 2708)
-            pre_raw_adj = cur_raw_adj
-
-            # cur_raw_adj: corresponds to A^(t) (num_nodes, num_nodes) e.g. (2708, 2708)
-            # cur_adj: corresponds to A^~(t) (num_nodes, num_nodes) e.g. (2708, 2708)
-            cur_raw_adj, cur_adj = network.learn_graph(network.graph_learner2, node_vec, node_mask, network.graph_skip_conn, graph_include_self=network.graph_include_self, init_adj=norm_init_adj)
-
-            update_adj_ratio = self.configIDGL.get('update_adj_ratio', None)
-            if update_adj_ratio is not None:
-                cur_adj = update_adj_ratio * cur_adj + (1 - update_adj_ratio) * first_adj
-
-            # apply GCN layer
+            # MP(X, A^~(1)) aka GNN_1 (node_num, hidden_size) e.g. (2708, 256)
             node_vec = torch.relu(network.encoder.graph_encoders[0](init_node_vec, cur_adj))
-            node_vec = F.dropout(node_vec, self.configIDGL.get('gl_dropout', 0), training=network.training)
+            node_vec = F.dropout(node_vec, network.dropout, training=network.training)
 
-            # BP to update weights
-            node_vec = network.encoder.graph_encoders[1](node_vec, cur_adj)
-            tmp_loss = self.csg_net(artinfo, absinfo, node_vec, nodes_num)
+            node_vec = network.encoder.graph_encoders[-1](node_vec, cur_adj)
+
+            # compute L_pred, the loss corresponding to the prediction task
+            # in our case the log-likelihood loss for the summarization task
+            loss1 = self.csg_net(artinfo, absinfo, node_vec, nodes_num)
 
             print('')
             print('computed summarization loss')
             print('')
 
-            loss += batch_stop_indicators.float() * tmp_loss
+            loss1 += self.add_batch_graph_loss(cur_raw_adj, init_node_vec)
 
-            # adding L_G^(t) obtaining L^(t)
-            loss += batch_stop_indicators.float() * self.add_batch_graph_loss(cur_raw_adj, init_node_vec, keep_batch_dim=True)
+            # first_raw_adj: corresponds to A^(1) (num_nodes, num_nodes) e.g. (2708, 2708)
+            # first_adj: corresponds to A^~(1) (num_nodes, num_nodes) e.g. (2708, 2708)
+            first_raw_adj, first_adj = cur_raw_adj, cur_adj
 
-            tmp_stop_criteria = batch_diff(cur_raw_adj, pre_raw_adj, first_raw_adj) > eps_adj
-            batch_stop_indicators = batch_stop_indicators * tmp_stop_criteria
+            # selecting number of iterations of Algorithm 1 by default it's 10
+            max_iter_ = self.configIDGL.get('max_iter', 10)
 
-        if iter_ > 0:
-            loss = torch.mean(loss / batch_last_iters.float()) + loss1
+            # eps_adj: delta in the paper
+            eps_adj = float(self.configIDGL.get('eps_adj', 0)) if training else float(self.configIDGL.get('test_eps_adj', self.configIDGL.get('eps_adj', 0)))
+
+            loss = 0
+            iter_ = 0
+
+            # Indicate the last iteration number for each example
+            batch_last_iters = to_cuda(torch.zeros(self.batch_size, dtype=torch.uint8), self.device)
+            # Indicate either an example is in onging state (i.e., 1) or stopping state (i.e., 0)
+            batch_stop_indicators = to_cuda(torch.ones(self.batch_size, dtype=torch.uint8), self.device)
+            while (iter_ == 0 or torch.sum(batch_stop_indicators).item() > 0) and iter_ < max_iter_:
+
+                iter_ += 1
+                print(iter_)
+                batch_last_iters += batch_stop_indicators
+
+                # A^(t-1) (num_nodes, num_nodes) e.g. (2708, 2708)
+                pre_raw_adj = cur_raw_adj
+
+                # cur_raw_adj: corresponds to A^(t) (num_nodes, num_nodes) e.g. (2708, 2708)
+                # cur_adj: corresponds to A^~(t) (num_nodes, num_nodes) e.g. (2708, 2708)
+                cur_raw_adj, cur_adj = network.learn_graph(network.graph_learner2, node_vec, node_mask, network.graph_skip_conn, graph_include_self=network.graph_include_self, init_adj=norm_init_adj)
+
+                update_adj_ratio = self.configIDGL.get('update_adj_ratio', None)
+                if update_adj_ratio is not None:
+                    cur_adj = update_adj_ratio * cur_adj + (1 - update_adj_ratio) * first_adj
+
+                # apply GCN layer
+                node_vec = torch.relu(network.encoder.graph_encoders[0](init_node_vec, cur_adj))
+                node_vec = F.dropout(node_vec, self.configIDGL.get('gl_dropout', 0), training=network.training)
+
+                # BP to update weights
+                node_vec = network.encoder.graph_encoders[1](node_vec, cur_adj)
+                tmp_loss = self.csg_net(artinfo, absinfo, node_vec, nodes_num)
+
+                print('')
+                print('computed summarization loss')
+                print('')
+
+                loss += batch_stop_indicators.float() * tmp_loss
+
+                # adding L_G^(t) obtaining L^(t)
+                loss += batch_stop_indicators.float() * self.add_batch_graph_loss(cur_raw_adj, init_node_vec, keep_batch_dim=True)
+
+                tmp_stop_criteria = batch_diff(cur_raw_adj, pre_raw_adj, first_raw_adj) > eps_adj
+                batch_stop_indicators = batch_stop_indicators * tmp_stop_criteria
+
+            if iter_ > 0:
+                loss = torch.mean(loss / batch_last_iters.float()) + loss1
+
+            else:
+                loss = loss1
 
         else:
-            loss = loss1
+            loss = self.csg_net(artinfo, absinfo, None, nodes_num)
 
         return loss
 
