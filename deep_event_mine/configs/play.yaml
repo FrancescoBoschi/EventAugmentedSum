@@ -18,5 +18,5 @@ freeze_bert: True
 compute_dem_loss: False
 compute_metrics: False
 gpu: 0
-batchsize: 16
+batchsize: 32
 seed: 42

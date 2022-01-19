@@ -235,11 +235,8 @@ class DeepGraphMine(nn.Module):
 
     def forward(self, sentences):
 
-        print('before prep_input_data')
         train_data = prepdata.prep_input_data(self.pred_params['train_data'], self.params, sentences0=sentences)
-        print('Done prep_input_data')
         nntrain_data, train_dataloader = configdem.read_test_data(train_data, self.params)
-        print('Done read_test_data')
         nntrain_data['g_entity_ids_'] = train_data['g_entity_ids_']
 
         all_ner_terms, all_ent_embs, fidss, feid_mapping = self.generate_events(nntrain_data, train_dataloader)
