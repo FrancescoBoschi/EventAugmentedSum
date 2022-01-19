@@ -691,7 +691,6 @@ class CopyDecoderGAT(AttentionalLSTMDecoder):
     def _step(self, tok, attention, nodes, node_num, states, side_mask=None, output_attn=False, ext_info=None,
               paras=None):
 
-        print(F'NODES NUM:{node_num}')
         # Our summary decoder uses a single-layer unidirectional LSTM
         # with a hidden state st at step t
 
@@ -748,8 +747,6 @@ class CopyDecoderGAT(AttentionalLSTMDecoder):
 
         # W_7 *  c_t^v e.g (3, 256)
         side_n = torch.mm(side_n, self._attn_s1)
-
-        print(f'SIDE_N: {side_n}')
 
         # context is of size(32, 256), each of the 256-dimensional vector represents c_t
         # score is of size e.g. (32, 775) each the 775 scalar represents alpha_k_t

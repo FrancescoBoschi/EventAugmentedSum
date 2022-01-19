@@ -1,5 +1,5 @@
 train our model 
 
 ```
-python train_abstractor.py --batch 1 --bert --path weights
+python train_abstractor.py --batch 2 --bert --path weights
 ```
