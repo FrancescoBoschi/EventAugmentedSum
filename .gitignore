@@ -8,3 +8,5 @@ __pycache__/
 runnn.py
 download_data_and_weights.py
 .DS_Store
+full_prep.py
+run_data_prep.sh

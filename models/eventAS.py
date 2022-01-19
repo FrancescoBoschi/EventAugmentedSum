@@ -31,6 +31,9 @@ class EventAugmentedSumm(nn.Module):
 
         batch_nodes_vec, batch_adjs, nodes_num = self.deepGM(sentences)
 
+        print('')
+        print('built graphs')
+        print('')
         artinfo = (article, art_lens, extend_art, extend_vsize)
         absinfo = (abstract, target)
 
@@ -66,6 +69,10 @@ class EventAugmentedSumm(nn.Module):
         # compute L_pred, the loss corresponding to the prediction task
         # in our case the log-likelihood loss for the summarization task
         loss1 = self.csg_net(artinfo, absinfo, node_vec, nodes_num)
+
+        print('')
+        print('computed summarization loss')
+        print('')
 
         loss1 += self.add_batch_graph_loss(cur_raw_adj, init_node_vec)
 
@@ -109,6 +116,10 @@ class EventAugmentedSumm(nn.Module):
             # BP to update weights
             node_vec = network.encoder.graph_encoders[1](node_vec, cur_adj)
             tmp_loss = self.csg_net(artinfo, absinfo, node_vec, nodes_num)
+
+            print('')
+            print('computed summarization loss')
+            print('')
 
             loss += batch_stop_indicators.float() * tmp_loss
 

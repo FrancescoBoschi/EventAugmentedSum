@@ -115,12 +115,8 @@ class BasicPipeline(object):
     def train_step(self):
         # forward pass of model
         self._net.train()
-        for fw_args in self._train_batcher(self._batch_size):
-            loss = self._net(*fw_args)
 
-        print('getting fw_args')
         fw_args = next(self._batches)
-        print('got fw_args')
 
         loss = self._net(*fw_args)
 

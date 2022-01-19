@@ -28,7 +28,7 @@ import pickle
 
 # NOTE: bucket size too large may sacrifice randomness,
 #       to low may increase # of PAD tokens
-BUCKET_SIZE = 6400
+BUCKET_SIZE = 100
 
 try:
     DATA_DIR = os.environ['DATA']
@@ -144,7 +144,7 @@ def build_batchers_bert(cuda, debug, bert_model='roberta-base'):
 
     # coll_fn is needed to filter out too short abstracts (<4) and articles (<5)
     train_loader = DataLoader(
-        PubmedDataset('train', DATA_DIR), batch_size=BUCKET_SIZE,
+        PubmedDataset('play', DATA_DIR), batch_size=BUCKET_SIZE,
         shuffle=not debug,
         num_workers=4 if cuda and not debug else 0,
         collate_fn=coll_fn
@@ -152,7 +152,7 @@ def build_batchers_bert(cuda, debug, bert_model='roberta-base'):
     train_batcher = BucketedGenerater(train_loader, prepro, sort_key, batchify,
                                       single_run=False, fork=not debug)
     val_loader = DataLoader(
-        PubmedDataset('val', DATA_DIR), batch_size=BUCKET_SIZE,
+        PubmedDataset('play', DATA_DIR), batch_size=BUCKET_SIZE,
         shuffle=False, num_workers=4 if cuda and not debug else 0,
         collate_fn=coll_fn
     )

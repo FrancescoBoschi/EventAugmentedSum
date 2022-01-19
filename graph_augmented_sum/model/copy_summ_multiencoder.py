@@ -12,7 +12,7 @@ from graph_augmented_sum.model.rnn import lstm_multiembedding_encoder
 from graph_augmented_sum.model.scibert import ScibertEmbedding
 from graph_augmented_sum.model.roberta import RobertaEmbedding
 from graph_augmented_sum.model.rnn import MultiLayerLSTMCells
-Seq2SeqSumm
+
 MAX_FREQ = 100
 INIT = 1e-2
 BERT_MAX_LEN = 512
@@ -108,7 +108,7 @@ class CopySummIDGL(Seq2SeqSumm):
         self._decoder_supervision = False
 
         self._decoder = CopyDecoderGAT(
-            self._copy, self._attn_s1, self._attns_wm, self._attns_wq, self._attn_v, None, None, False,
+            self._copy, self._attn_s1, self._attns_wm, self._attns_wq, self._attn_v, None, None,
             self._embedding, self._dec_lstm, self._attn_wq, self._projection_decoder, self._attn_wb, self._attn_v,
         )
 
@@ -656,7 +656,7 @@ class CopySummIDGL(Seq2SeqSumm):
 
 class CopyDecoderGAT(AttentionalLSTMDecoder):
     def __init__(self, copy, attn_s1, attns_wm, attns_wq, attns_v,
-                 para_wm=None, para_v=None, hierarchical_attention=False, *args, **kwargs):
+                 para_wm=None, para_v=None, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self._copy = copy
         self._attn_s1 = attn_s1
@@ -664,12 +664,6 @@ class CopyDecoderGAT(AttentionalLSTMDecoder):
         self._attns_wq = attns_wq
         self._attns_v = attns_v
         self.device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
-
-        self._hierarchical_attn = hierarchical_attention
-        if self._hierarchical_attn:
-            assert para_wm is not None and para_v is not None
-            self._para_wm = para_wm
-            self._para_v = para_v
 
     def __call__(self, attention, target, nodes, node_num, init_states, side_mask=None, output_attn=None, ext_info=None,
                  paras=None):
@@ -682,13 +676,12 @@ class CopyDecoderGAT(AttentionalLSTMDecoder):
         # loop over all
         for i in range(max_len):
 
-            tok = target[:, i:i + 1]
-            target_embedding_i = None
-
             # target token index for each document e.g. [0, 12, ....] (32, 1)
+            tok = target[:, i:i + 1]
+
             logit, states, _, score_n, out_attns = self._step(tok, attention, nodes, node_num, states,
                                                               side_mask=side_mask, output_attn=True, ext_info=ext_info,
-                                                              paras=paras, target_embedding_i=target_embedding_i)
+                                                              paras=paras)
             logits.append(logit)
             score_ns.append(score_n)
 
@@ -696,7 +689,9 @@ class CopyDecoderGAT(AttentionalLSTMDecoder):
         return logit, score_ns
 
     def _step(self, tok, attention, nodes, node_num, states, side_mask=None, output_attn=False, ext_info=None,
-              paras=None, target_embedding_i=None):
+              paras=None):
+
+        print(F'NODES NUM:{node_num}')
         # Our summary decoder uses a single-layer unidirectional LSTM
         # with a hidden state st at step t
 
@@ -729,43 +724,32 @@ class CopyDecoderGAT(AttentionalLSTMDecoder):
         query = torch.mm(decoder_out, self._attn_w)
         attention, attn_mask, extend_src, extend_vsize = attention
 
-        # nodes attention
-        if self._hierarchical_attn:
-            node_reps, node_length, para_node_aligns = paras
-            para_reps = nodes
-            node_reps = torch.matmul(node_reps, self._attns_wm)
-            para_reps = torch.matmul(para_reps, self._para_wm)
-            query_s = torch.mm(decoder_out, self._attns_wq)
-            nmask = len_mask(node_length, attention.device).unsqueeze(-2)
-            para_length = node_num
+        # W_4 * G^ where each element of each G^ is v_i^ e.g. (32, 45, 256)
+        nodes = torch.matmul(nodes, self._attns_wm)
+
+        # W_3 * s_t e.g. (32, 256)
+        query_s = torch.mm(decoder_out, self._attns_wq)
+
+        # (32, 1, 45)
+        nmask = len_mask(node_num, attention.device).unsqueeze(-2)
+
+
+        if side_mask is not None:
+            side_n, score_n = badanau_attention(query_s, nodes, nodes, mem_mask=side_mask.unsqueeze(-2),
+                                                v=self._attns_v, sigmoid=False)
         else:
-            # W_4 * G^ where each element of each G^ is v_i^ e.g. (32, 45, 256)
-            nodes = torch.matmul(nodes, self._attns_wm)
 
-            # W_3 * s_t e.g. (32, 256)
-            query_s = torch.mm(decoder_out, self._attns_wq)
-
-            # (32, 1, 45)
-            nmask = len_mask(node_num, attention.device).unsqueeze(-2)
-        if self._hierarchical_attn:
-            side_n, score_n = hierarchical_attention(query_s, node_reps, node_reps, self._attn_v, para_reps,
-                                                     self._para_v, para_node_aligns, mem_mask=nmask,
-                                                     hierarchical_length=para_length)
-        else:
-            if side_mask is not None:
-                side_n, score_n = badanau_attention(query_s, nodes, nodes, mem_mask=side_mask.unsqueeze(-2),
-                                                    v=self._attns_v, sigmoid=False)
-            else:
-
-                # side_n is of size(32, 256), each of the 256-dimensional vector represents c_t^v
-                # score is of size e.g. (32, 45) each the 45 scalar represents alpha_i_t^v
-                side_n, score_n = badanau_attention(query_s, nodes, nodes, mem_mask=nmask, v=self._attns_v,
-                                                    sigmoid=False)
+            # side_n is of size(32, 256), each of the 256-dimensional vector represents c_t^v
+            # score_n is of size e.g. (32, 45) each the 45 scalar represents alpha_i_t^v
+            side_n, score_n = badanau_attention(query_s, nodes, nodes, mem_mask=nmask, v=self._attns_v,
+                                                sigmoid=False)
 
         out_attentions['node_attention'] = score_n.detach()
 
         # W_7 *  c_t^v e.g (3, 256)
         side_n = torch.mm(side_n, self._attn_s1)
+
+        print(f'SIDE_N: {side_n}')
 
         # context is of size(32, 256), each of the 256-dimensional vector represents c_t
         # score is of size e.g. (32, 775) each the 775 scalar represents alpha_k_t
@@ -853,29 +837,15 @@ class CopyDecoderGAT(AttentionalLSTMDecoder):
         query = torch.matmul(decoder_out, self._attn_w)
         attention, attn_mask, extend_src, extend_vsize = attention
 
-        # nodes attention
-        if self._hierarchical_attn:
-            node_reps, node_length, para_node_aligns, max_subgraph_node_num = filtered_para_info
-            para_reps = nodes
-            node_reps = torch.matmul(node_reps, self._attns_wm)
-            para_reps = torch.matmul(para_reps, self._para_wm)
-            query_s = torch.matmul(decoder_out, self._attns_wq)
-            nmask = len_mask(node_length, attention.device, max_num=max_subgraph_node_num).unsqueeze(-2)
-            para_length = node_num
+        nodes = torch.matmul(nodes, self._attns_wm)
+        query_s = torch.matmul(decoder_out, self._attns_wq)
+        nmask = len_mask(node_num, attention.device, max_num=max_node_num).unsqueeze(-2)
+
+        if side_mask is not None:
+            side_n, score_n = badanau_attention(query_s, nodes, nodes, mem_mask=side_mask.unsqueeze(-2),
+                                                v=self._attns_v)
         else:
-            nodes = torch.matmul(nodes, self._attns_wm)
-            query_s = torch.matmul(decoder_out, self._attns_wq)
-            nmask = len_mask(node_num, attention.device, max_num=max_node_num).unsqueeze(-2)
-        if self._hierarchical_attn:
-            side_n, score_n = hierarchical_attention(query_s, node_reps, node_reps, self._attn_v, para_reps,
-                                                     self._para_v, para_node_aligns, mem_mask=nmask,
-                                                     hierarchical_length=para_length, max_para_num=max_node_num)
-        else:
-            if side_mask is not None:
-                side_n, score_n = badanau_attention(query_s, nodes, nodes, mem_mask=side_mask.unsqueeze(-2),
-                                                    v=self._attns_v)
-            else:
-                side_n, score_n = badanau_attention(query_s, nodes, nodes, mem_mask=nmask, v=self._attns_v)
+            side_n, score_n = badanau_attention(query_s, nodes, nodes, mem_mask=nmask, v=self._attns_v)
 
         out_attentions['node_attention'] = score_n.detach()
         side_n = torch.matmul(side_n, self._attn_s1)
