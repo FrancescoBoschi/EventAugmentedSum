@@ -3,6 +3,7 @@
 /weights
 /deep_event_mine/experiments
 /deep_event_mine/data
+CDSR_data/
 .idea/
 __pycache__/
 runnn.py

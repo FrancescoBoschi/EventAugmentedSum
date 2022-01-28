@@ -18,10 +18,10 @@ MAX_FREQ = 100
 def coll_fn(data):
     def is_good_data(d):
         """ make sure data is not empty"""
-        source_sents, targets, article_ids = d[0], d[1], d[2]
-        word_num = len(' '.join(source_sents).split(' '))
+        sources, targets, article_ids = d[0], d[1], d[2]
+        word_num = len(' '.join(sources).split(' '))
         target_num = len(' '.join(targets).split(' '))
-        return source_sents and targets and article_ids and word_num > 5 and target_num > 4
+        return sources and targets and article_ids and word_num > 300 and target_num > 100
 
     batch = list(filter(is_good_data, data))
     assert all(map(is_good_data, batch))
@@ -75,7 +75,6 @@ def prepro_fn(max_src_len, max_tgt_len, batch):
     batch = list(zip(sources, targets))
     return batch
 
-
 @curry
 def prepro_fn_copy_bert(tokenizer, max_src_len, max_tgt_len, batch):
     """
@@ -87,12 +86,7 @@ def prepro_fn_copy_bert(tokenizer, max_src_len, max_tgt_len, batch):
     def prepro_one(sample):
         source, target, article_id = sample
 
-        raw_sentences = source
-
-        # join all the sentences in a single string representing the article
-        source = ' '.join(source).strip()
-        # join all the sentences in a single string representing the abstract
-        target = ' '.join(target).strip()
+        raw_sentences = source.split('. ')
 
         # list of all tokens representing the article including the start and end token ('<s>', '</s>')
         # if the list of tokens is larger than max_src_len e.g 1024, the exceeding tokens are removed
@@ -144,6 +138,7 @@ def convert_batch_copy_bert(tokenizer, max_src_len, batch):
 
 @curry
 def batchify_fn_copy_bert(tokenizer, data, cuda=True):
+
     start = tokenizer.bos_token_id
     end = tokenizer.eos_token_id
     pad = tokenizer.pad_token_id
@@ -705,6 +700,7 @@ class BucketedGenerater(object):
 
     def __call__(self, batch_size: int):
         def get_batches(hyper_batch):
+
             indexes = list(range(0, len(hyper_batch), batch_size))
             if not self._single_run:
                 # random shuffle for training batches

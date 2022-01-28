@@ -19,7 +19,6 @@ logging.getLogger('transformers.tokenization_utils').disabled = True
 logging.basicConfig(level=logging.ERROR)
 
 
-
 def get_basic_grad_fn(net, clip_grad, max_grad=1e2):
     def f():
         grad_norm = clip_grad_norm_(
@@ -113,7 +112,7 @@ class BasicPipeline(object):
         return loss_args
 
     def train_step(self):
-        # forward pass of model
+
         self._net.train()
 
         fw_args = next(self._batches)

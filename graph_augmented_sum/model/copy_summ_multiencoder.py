@@ -3,15 +3,15 @@ from torch import nn
 from torch.nn import init
 from torch.nn import functional as F
 
-from graph_augmented_sum.model.attention import step_attention, badanau_attention, copy_from_node_attention, hierarchical_attention
+from graph_augmented_sum.model.attention import badanau_attention
 from graph_augmented_sum.model.util import len_mask, sequence_mean, sequence_loss
 from graph_augmented_sum.model.summ import Seq2SeqSumm, AttentionalLSTMDecoder
 from graph_augmented_sum.model import beam_search as bs
-from graph_augmented_sum.utils import PAD, UNK, START, END
+from graph_augmented_sum.utils import PAD, END
 from graph_augmented_sum.model.rnn import lstm_multiembedding_encoder
-from graph_augmented_sum.model.scibert import ScibertEmbedding
 from graph_augmented_sum.model.roberta import RobertaEmbedding
 from graph_augmented_sum.model.rnn import MultiLayerLSTMCells
+from graph_augmented_sum.model.graph_enc import Block
 
 MAX_FREQ = 100
 INIT = 1e-2
@@ -54,10 +54,11 @@ class _CopyLinear(nn.Module):
 
 class CopySummIDGL(Seq2SeqSumm):
     def __init__(self, vocab_size, emb_dim,
-                 n_hidden, bidirectional, n_layer, side_dim, dropout=0.0, bert_length=512):
+                 n_hidden, bidirectional, n_layer, side_dim, dropout=0.0, bert_length=512, encode_graph=True, gat_args={}):
         super().__init__(vocab_size, emb_dim,
                          n_hidden, bidirectional, n_layer, dropout)
 
+        self._device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
         self._bert_model = RobertaEmbedding()
         self._embedding = self._bert_model._embedding
         self._embedding.weight.requires_grad = False
@@ -82,6 +83,11 @@ class CopySummIDGL(Seq2SeqSumm):
         self._copy = _CopyLinear(n_hidden, n_hidden, 2 * emb_dim, side_dim, side_dim)
 
         graph_hsz = n_hidden
+        self._graph_hsz = graph_hsz
+        self.encode_graph = encode_graph
+        gat_args['graph_hsz'] = graph_hsz
+        if self.encode_graph:
+            self.gat = Block(gat_args)
 
         enc_lstm_in_dim = emb_dim
         self._enc_lstm = nn.LSTM(
@@ -98,7 +104,7 @@ class CopySummIDGL(Seq2SeqSumm):
         init.xavier_normal_(self._attns_wq)
         init.xavier_normal_(self._attn_s1)
         init.uniform_(self._attns_v, -INIT, INIT)
-        self._graph_proj = nn.Linear(graph_hsz, graph_hsz)
+        self._graph_proj = nn.Linear(2604, graph_hsz)
 
         self._projection_decoder = nn.Sequential(
             nn.Linear(3 * n_hidden, n_hidden),
@@ -112,7 +118,7 @@ class CopySummIDGL(Seq2SeqSumm):
             self._embedding, self._dec_lstm, self._attn_wq, self._projection_decoder, self._attn_wb, self._attn_v,
         )
 
-    def forward(self, artinfo, absinfo, node_vec, node_num):
+    def forward(self, artinfo, absinfo, node_vec, adjs, node_num):
         """
         - article: Tensor of size (n_split_docs, 512) where n_split_docs doesn't correspond to the number of documents
                    involved, but to the number of lots of tokens necessary to represent the original articles. E.g. when
@@ -141,6 +147,9 @@ class CopySummIDGL(Seq2SeqSumm):
         # the token embeddings W_6 * h_k in the article e.g. (32, 768)
         attention, init_dec_states = self.encode(article, art_lens)
 
+        if self.encode_graph and node_vec is not None:
+            node_vec = self._encode_graph(node_vec, adjs, node_num)
+
         sw_mask = None
         ext_info = None
 
@@ -148,6 +157,7 @@ class CopySummIDGL(Seq2SeqSumm):
 
         # logit: contains all the logits for each prediction that has to be made in the batch e.g. (190, 50265)
         #        where 190 is the number of tokens that have to be predicted in the 3 target documents
+
         logit = self._decoder(
             (attention, mask, extend_art, extend_vsize),
             abstract,
@@ -283,6 +293,51 @@ class CopySummIDGL(Seq2SeqSumm):
             [init_h[-1], sequence_mean(attention, art_lens, dim=1)], dim=1
         ))
         return attention, (init_dec_states, init_attn_out)
+
+    def _encode_graph(self, nodes, adjs, node_num):
+
+        init_nodes = nodes
+        adjs = list(adjs)
+
+        triple_outs = []
+        for _i, adj in enumerate(adjs):
+
+            # number of nodes e.g 31
+            N = node_num[_i]
+
+            if N > 0:
+
+                adj = adj[:N, :N]
+
+                # just get the relevant nodes of the _i-th document graph
+                # e.g size (31, 256) where nodes size is e.g. (32, 45, 256)
+                ngraph = nodes[_i, :N, :]  # N * d
+                mask = (adj == 0)  # N * N
+                triple_out = self.gat(ngraph, ngraph, mask)
+                triple_out[triple_out != triple_out] = 0
+
+            else:
+                triple_out = None
+
+            triple_outs.append(triple_out)
+
+        max_n = max(node_num)
+
+        nodes_list = []
+        for s, n in zip(triple_outs, node_num):
+            if n == 0:
+                nodes_list.append(torch.zeros(max_n - n, self._graph_hsz).to(self._device))
+            elif n != max_n:
+                nodes_list.append(torch.cat([s, torch.zeros(max_n - n, self._graph_hsz).to(self._device)], dim=0))
+            else:
+                nodes_list.append(s)
+
+        # e.g. (3, 45, 256)
+        nodes = torch.stack(nodes_list, dim=0)
+
+        nodes = self._graph_proj(init_nodes) + nodes
+
+        return nodes
 
     def encode_bert(self, article, feature_dict, art_lens=None):
         size = (

@@ -1,6 +1,7 @@
 """ train the abstractor"""
+import pandas as pd
+
 from graph_augmented_sum.training import get_basic_grad_fn, basic_validate
-from graph_augmented_sum.training import BasicPipeline, BasicTrainer
 import argparse
 import json
 import os, re
@@ -9,13 +10,13 @@ import pickle as pkl
 
 from cytoolz import compose, concat
 from transformers import RobertaTokenizer
+from tqdm import tqdm
 
 import torch
 from torch import optim
 from torch.nn import functional as F
 from torch.optim.lr_scheduler import ReduceLROnPlateau
 from torch.utils.data import DataLoader, Dataset
-
 
 from models.eventAS import EventAugmentedSumm
 from graph_augmented_sum.model.util import sequence_loss
@@ -26,48 +27,30 @@ from graph_augmented_sum.data.batcher import BucketedGenerater
 
 import pickle
 
-# NOTE: bucket size too large may sacrifice randomness,
-#       to low may increase # of PAD tokens
-BUCKET_SIZE = 100
 
-try:
-    DATA_DIR = os.environ['DATA']
-except KeyError:
-    print('please use environment variable to specify data directories')
-
-
-class PubmedDataset(Dataset):
+class CDSRDataset(Dataset):
     """ single article sentence -> single abstract sentence
     (dataset created by greedily matching ROUGE)
     """
 
     def __init__(self, split: str, path: str):
-        self._data_path = join(path, '{}.txt'.format(split))
+        self._data_path = join(path, '{}.csv'.format(split))
 
-        self._js_data = []
-        with open(self._data_path, 'rb') as f:
-            for line in f:
-                self._js_data.append(json.loads(line))
+        self._data_df = pd.read_csv(self._data_path)
 
     def __len__(self):
-        return len(self._js_data)
+        return len(self._data_df)
 
     def __getitem__(self, i):
-        js_i = self._js_data[i]
-        art_sents, abs_sents, article_id = (js_i['article_text'], js_i['abstract_text'], js_i['article_id'])
-        abs_sents = [' '.join(abs_sents)]
-        return art_sents, abs_sents, article_id
+        target = self._data_df.loc[i, 'target']
+        source = self._data_df.loc[i, 'source']
+        article_id = self._data_df.loc[i, 'article_id']
 
-
-def get_bert_align_dict(filename='preprocessing/bertalign-base.pkl'):
-    with open(filename, 'rb') as f:
-        bert_dict = pickle.load(f)
-    return bert_dict
+        return source, target, article_id
 
 
 def configure_net(configdgm, configIDGL, vocab_size, emb_dim,
                   n_hidden, bidirectional, n_layer, batch_size, bert_length):
-
     csg_net_args = {}
     csg_net_args['vocab_size'] = vocab_size
     csg_net_args['emb_dim'] = emb_dim
@@ -77,26 +60,13 @@ def configure_net(configdgm, configIDGL, vocab_size, emb_dim,
     csg_net_args['n_layer'] = n_layer
     csg_net_args['bert_length'] = bert_length
 
-    net = EventAugmentedSumm(configdgm, configIDGL, csg_net_args, batch_size)
+    net = EventAugmentedSumm(configdgm, csg_net_args, batch_size)
 
     net_args = csg_net_args
     net_args['configdgm'] = configdgm
     net_args['configIDGL'] = configIDGL
 
     return net, net_args
-
-
-def load_best_ckpt(model_dir, reverse=False):
-    """ reverse=False->loss, reverse=True->reward/score"""
-    ckpts = os.listdir(join(model_dir, 'ckpt'))
-    ckpt_matcher = re.compile('^ckpt-.*-[0-9]*')
-    ckpts = sorted([c for c in ckpts if ckpt_matcher.match(c)],
-                   key=lambda c: float(c.split('-')[1]), reverse=reverse)
-    print('loading checkpoint {}...'.format(ckpts[0]))
-    ckpt = torch.load(
-        join(model_dir, 'ckpt/{}'.format(ckpts[0])), map_location=lambda storage, loc: storage
-    )['state_dict']
-    return ckpt
 
 
 def configure_training(opt, lr, clip_grad, lr_decay, batch_size, bert):
@@ -125,52 +95,108 @@ def configure_training(opt, lr, clip_grad, lr_decay, batch_size, bert):
     return criterion, train_params
 
 
-def build_batchers_bert(cuda, debug, bert_model='roberta-base'):
+def build_loaders(cuda, debug, bert_model='roberta-base'):
     tokenizer = RobertaTokenizer.from_pretrained(bert_model)
 
-    # mul didn't receive enough arguments to evaluate (missing batch)
-    # so it waits, returning a
-    # partially evaluated function 'prepro'
-    prepro = prepro_fn_copy_bert(tokenizer, args.max_art, args.max_abs)
-
-    def sort_key(sample):
-        src, target = sample[0], sample[1]
-        return len(target), len(src)
-
-    batchify = compose(
-        batchify_fn_copy_bert(tokenizer, cuda=cuda),
-        convert_batch_copy_bert(tokenizer, args.max_art)
-    )
-
-    # coll_fn is needed to filter out too short abstracts (<4) and articles (<5)
+    # coll_fn is needed to filter out too short abstracts (<100) and articles (<300)
     train_loader = DataLoader(
-        PubmedDataset('play', DATA_DIR), batch_size=BUCKET_SIZE,
+        CDSRDataset('train', args.data_dir), batch_size=args.batch,
         shuffle=not debug,
         num_workers=4 if cuda and not debug else 0,
         collate_fn=coll_fn
     )
-    train_batcher = BucketedGenerater(train_loader, prepro, sort_key, batchify,
-                                      single_run=False, fork=not debug)
+
     val_loader = DataLoader(
-        PubmedDataset('play', DATA_DIR), batch_size=BUCKET_SIZE,
+        CDSRDataset('train', args.data_dir), batch_size=args.batch,
         shuffle=False, num_workers=4 if cuda and not debug else 0,
         collate_fn=coll_fn
     )
-    val_batcher = BucketedGenerater(val_loader, prepro, sort_key, batchify,
-                                    single_run=True, fork=not debug)
 
-    return train_batcher, val_batcher, tokenizer.encoder
+    return train_loader, val_loader, tokenizer
+
+
+class BasicTrainer:
+    """ Basic trainer with minimal function and early stopping"""
+    def __init__(self, ckpt_freq, patience, scheduler, cuda, grad_fn, word2id, save_dir):
+
+        self._ckpt_freq = ckpt_freq
+        self._patience = patience
+        self._save_dir = save_dir
+
+        self._scheduler = scheduler
+
+        self._epoch = 0
+        self._cuda = cuda
+
+        self._grad_fn = grad_fn
+        self._batchify = compose(
+            batchify_fn_copy_bert(word2id, cuda=self._cuda),
+            convert_batch_copy_bert(word2id, args.max_art),
+            prepro_fn_copy_bert(word2id, args.max_art, args.max_abs)
+        )
+
+    def train(self, net, train_loader, val_loader, optimizer):
+
+        while True:
+            net.train()
+            self._epoch += 1
+
+            for batch in tqdm(train_loader, leave=False):
+
+                fw_args = self._batchify(batch)
+
+                loss = net(*fw_args)
+
+                loss.backward()
+
+                log_dict = {'loss': loss.item()}
+
+                if self._grad_fn is not None:
+                    log_dict.update(self._grad_fn())
+
+                optimizer.step()
+                net.zero_grad()
+
+            if self._epoch % self._ckpt_freq == 0:
+                stop = self.checkpoint()
+                if stop:
+                    break
+
+    def checkpoint(self):
+        # compute loss on validation set
+        val_metric = self.validate()
+
+        # save model weights and optimizer
+        self._pipeline.checkpoint(
+            join(self._save_dir, 'ckpt'), self._epoch, val_metric)
+        if isinstance(self._scheduler, ReduceLROnPlateau):
+            self._scheduler.step(val_metric)
+        else:
+            self._scheduler.step()
+
+        # check if the number of times in a row that we don't experience an improvement
+        # is greater than patience e.g. 5, if that's the case we interrupt training
+        stop = self.check_stop(val_metric)
+        return stop
+
+    def check_stop(self, val_metric):
+        if self._best_val is None:
+            self._best_val = val_metric
+        elif val_metric < self._best_val:
+            self._current_p = 0
+            self._best_val = val_metric
+        else:
+            self._current_p += 1
+        return self._current_p >= self._patience
 
 
 def main(args):
-    # create data batcher, vocabulary
-    # batcher
     import logging
     logging.basicConfig(level=logging.ERROR)
 
-    train_batcher, val_batcher, word2id = build_batchers_bert(args.cuda, args.debug)
+    train_loader, val_loader, tokenizer = build_loaders(args.cuda, args.debug)
 
-    net, net_args = configure_net(args.configdgm, args.configIDGL, len(word2id), args.emb_dim,
+    net, net_args = configure_net(args.configdgm, args.configIDGL, len(tokenizer.encoder), args.emb_dim,
                                   args.n_hidden, args.bi, args.n_layer, args.batch, args.max_art)
 
     criterion, train_params = configure_training(
@@ -181,12 +207,9 @@ def main(args):
     if not exists(args.path):
         os.makedirs(args.path)
     with open(join(args.path, 'vocab.pkl'), 'wb') as f:
-        pkl.dump(word2id, f, pkl.HIGHEST_PROTOCOL)
+        pkl.dump(tokenizer.encoder, f, pkl.HIGHEST_PROTOCOL)
 
-    meta = {}
-    meta['net'] = 'base_abstractor'
-    meta['net_args'] = net_args
-    meta['train_args'] = train_params
+    meta = {'net_args': net_args, 'train_args': train_params}
     with open(join(args.path, 'meta.json'), 'w') as f:
         json.dump(meta, f, indent=4)
 
@@ -203,15 +226,11 @@ def main(args):
                                   factor=args.decay, min_lr=0,
                                   patience=args.lr_p)
 
-    pipeline = BasicPipeline(meta['net'], net,
-                             train_batcher, val_batcher, args.batch, val_fn,
-                             criterion, optimizer, grad_fn)
-    trainer = BasicTrainer(pipeline, args.path,
-                           args.ckpt_freq, args.patience, scheduler)
+    trainer = BasicTrainer(args.ckpt_freq, args.patience, scheduler, args.cuda, grad_fn, tokenizer, args.path)
 
     print('start training with the following hyper-parameters:')
     print(meta)
-    trainer.train()
+    trainer.train(net, train_loader, val_loader, optimizer)
 
 
 if __name__ == '__main__':
@@ -245,17 +264,20 @@ if __name__ == '__main__':
                         help='attention type')
     parser.add_argument('--feat', action='append', default=['node_freq'])
     parser.add_argument('--bert', action='store_true', help='use bert!')
-    parser.add_argument('--bertmodel', action='store', type=str, default='deep_event_mine/data/bert/scibert_scivocab_cased',
+    parser.add_argument('--bertmodel', action='store', type=str,
+                        default='deep_event_mine/data/bert/scibert_scivocab_cased',
                         help='pre-trained model file path')
     parser.add_argument('--configdgm', action='store', default='play.yaml',
                         help='configuration file name for DeepGraphMine e.g. example1.yaml')
     parser.add_argument('--configIDGL', action='store', default='idgl.yml',
                         help='configuration file name for IDGL e.g. example2.yaml')
+    parser.add_argument('--data_dir', action='store', default='CDSR_data',
+                        help='directory where the data is stored')
 
     # length limit
-    parser.add_argument('--max_art', type=int, action='store', default=6000,
+    parser.add_argument('--max_art', type=int, action='store', default=1000,
                         help='maximun words in a single article sentence')
-    parser.add_argument('--max_abs', type=int, action='store', default=150,
+    parser.add_argument('--max_abs', type=int, action='store', default=700,
                         help='maximun words in a single abstract sentence')
     # training options
     parser.add_argument('--lr', type=float, action='store', default=1e-3,
@@ -285,8 +307,7 @@ if __name__ == '__main__':
                         help='disable GPU training')
     parser.add_argument('--gpu_id', type=int, default=0, help='gpu id')
     args = parser.parse_args()
-    if args.debug:
-        BUCKET_SIZE = 64
+
     args.bi = True
     if args.docgraph or args.paragraph:
         args.gat = True
@@ -303,4 +324,5 @@ if __name__ == '__main__':
 
     args.n_gpu = 1
 
+    print(args)
     main(args)

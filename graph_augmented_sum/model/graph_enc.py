@@ -90,9 +90,6 @@ class MultiHeadAttention(nn.Module):
             raise ValueError("query_dim and key_dim must be the same")
         if num_units % h != 0:
             raise ValueError("num_units must be dividable by h")
-        if query_dim != num_units:
-            raise ValueError("to employ residual connection, the number of "
-                             "query_dim and num_units must be the same")
 
         self._num_units = num_units
         self._h = h
@@ -174,7 +171,6 @@ class Block_old(nn.Module):
         hidden_size = args.get('graph_hsz', 128)
         blockdrop = args.get('blockdrop', 0.1)
 
-
         self.attn = MultiHeadAttention(hidden_size, hidden_size, hidden_size, h=4, dropout_p=blockdrop)
         self.l1 = nn.Linear(hidden_size, hidden_size*4)
         self.l2 = nn.Linear(hidden_size*4, hidden_size)
@@ -193,20 +189,13 @@ class Block_old(nn.Module):
         return q
 
 class Block(nn.Module):
-    def __init__(self,args):
+    def __init__(self, args):
         super().__init__()
         hidden_size = args.get('graph_hsz', 128)
+        node_size = args.get('node_size', 2604)
         blockdrop = args.get('blockdrop', 0.1)
 
-        self.attn = MultiHeadAttention(hidden_size, hidden_size, hidden_size, h=4, dropout_p=blockdrop)
-        # self.l1 = nn.Linear(hidden_size, hidden_size*4)
-        # self.l2 = nn.Linear(hidden_size*4, hidden_size)
-        # self.ln_1 = nn.LayerNorm(hidden_size)
-        # self.ln_2 = nn.LayerNorm(hidden_size)
-        # self.drop = nn.Dropout(blockdrop)
-        # #self.act = gelu
-        # self.act = nn.PReLU(hidden_size*4)
-        # self.gatact = nn.PReLU(hidden_size)
+        self.attn = MultiHeadAttention(node_size, node_size, hidden_size, h=4, dropout_p=blockdrop)
 
     def forward(self,q,k,m):
         # q: n * d k: r * d m: n * r
@@ -396,13 +385,6 @@ class gat_encode(nn.Module):
             self.gcn = GCN(hidden_size, blockdrop)
         else:
             self.gat = Block(args)
-        # if model == "gat":
-        #     self.gat = nn.ModuleList([MultiHeadAttention(hidden_size, hidden_size, hidden_size, h=4, dropout_p=blockdrop) for _ in range(prop)])
-        # else:
-        #     self.gat = nn.ModuleList([Block(args) for _ in range(prop)])
-
-        # self._pad_entity = nn.Parameter(torch.Tensor(1, hidden_size))
-        # nn.init.uniform_(self._pad_entity)
 
         self.prop = prop
         self.sparse = sparse

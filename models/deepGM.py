@@ -124,7 +124,7 @@ class DeepGraphMine(nn.Module):
         ent_anns = []
 
         is_eval_ev = False
-        for batch in tqdm(train_dataloader, desc="Iteration", leave=False):
+        for batch in tqdm(train_dataloader):
             eval_data_ids = batch
             tensors = utils.get_tensors(eval_data_ids, nntrain_data, self.params)
 
