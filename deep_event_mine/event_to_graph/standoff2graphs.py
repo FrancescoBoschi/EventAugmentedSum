@@ -1,10 +1,10 @@
 # coding: utf-8
 
-import json
+import pickle
 import os
 import networkx
 import argparse
-import deep_event_mine.event_to_graph.datautils as datautils
+import datautils
 
 
 def base_root_name(filename: str) -> str:
@@ -134,12 +134,14 @@ def get_graphs(files_path, articles_ids):
 def main():
 
     parser = argparse.ArgumentParser()
-    parser.add_argument('--dataset', type=str, required=True)
+    parser.add_argument('--files_path', type=str, required=True)
     args = parser.parse_args()
-    datafiles = datautils.data_files(args.dataset)
 
-    all_graphs = []
+    graphs_doc = {}
+    datafiles = datautils.data_files(args.files_path)
+
     for datafile in datafiles:
+        print(datafile)
         entities, events = datautils.load_document(datafile)
 
         evs_graph = {}
@@ -163,10 +165,11 @@ def main():
 
         arguments_set = set(arguments_list)
 
+        all_graphs = []
         for ev_id, ev in evs_graph.items():
 
             if ev_id not in arguments_set:
-                graph = networkx.DiGraph(source_doc=datafile.base_name, dataset=args.dataset)
+                graph = networkx.DiGraph(source_doc=datafile.base_name, dataset=args.files_path)
 
                 trig = entities[ev['trigger']]
                 graph.add_node(trig.id, type=trig.type, name=trig.name)
@@ -199,11 +202,16 @@ def main():
                                         graph.add_node(ent_nest3.id, type=ent_nest3.type, name=ent_nest3.name)
                                         graph.add_edge(ent_nest2.id, ent_nest3.id, key=arg_nest3_obj['role'])
 
-                all_graphs.append(networkx.node_link_data(graph))
+                graph.add_node('master_node')
+                for node in graph.nodes:
+                    graph.add_edge('master_node', node, key='special')
+                all_graphs.append(graph)
 
-    print(f'Saving {len(all_graphs)} graphs...')
-    with open(args.dataset + '_graphs.json', 'w') as ff:
-        json.dump(all_graphs, ff)
+        graphs_doc[datafile.base_name] = all_graphs
+
+    print(f'Saving {len(graphs_doc)} graphs...')
+    with open(f'{args.files_path}/graphs.pickle', 'wb') as ff:
+        pickle.dump(graphs_doc, ff)
 
 
 if __name__ == '__main__':

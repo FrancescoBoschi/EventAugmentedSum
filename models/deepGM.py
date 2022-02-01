@@ -70,7 +70,7 @@ class DeepGraphMine(nn.Module):
                                 correct_index = feid_mapping[fidss[bb][sent]][i_d]
                                 entities_dict[fidss[bb][sent]][correct_index] = (sent, index, node_emb)
 
-        # contains a graph for each document in the batch
+        # contains a n graphs for each document in the batch
         # constructed using, events triggers and entities
         all_graphs = get_graphs(self.a2_files_path, articles_ids)
         nodes_num = []

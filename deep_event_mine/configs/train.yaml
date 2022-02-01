@@ -1,18 +1,19 @@
-task_name: cg
+task_name: mlee
 
-bert_model: data/bert/scibert_scivocab_cased
-model_path: data/models/cg/model/
-saved_params: data/models/cg/cg.param
+bert_vocab: deep_event_mine/data/bert/scibert_scivocab_cased/vocab.txt
+bert_model: deep_event_mine/data/bert/scibert_scivocab_cased
+model_path: deep_event_mine/data/models/mlee/model/
+saved_params: deep_event_mine/data/models/mlee/mlee.param
 
-train_data: data/corpora/cg/train/
 
-ev_eval_script_path: eval/scripts/eval-ev-cg.py
 a2_entities: ['DNA_domain_or_region', 'Protein_domain_or_region']
 raw_text: True
 ner_predict_all: True
 
-result_dir: experiments/cg/predict-gold-dev/
+result_dir: deep_event_mine/train/
 
+compute_dem_loss: False
+compute_metrics: False
 gpu: 0
-batchsize: 16
+batchsize: 32
 seed: 42

@@ -101,7 +101,6 @@ class MultiHeadAttention(nn.Module):
         self.key_layer = nn.Linear(key_dim, num_units, bias=False)
         self.value_layer = nn.Linear(key_dim, num_units, bias=False)
 
-
     def forward(self, query, keys, mask=None, debug=False):
 
         # The size of the following matrices is  e.g (31, 256)

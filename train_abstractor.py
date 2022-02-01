@@ -4,7 +4,7 @@ import pandas as pd
 from graph_augmented_sum.training import get_basic_grad_fn, basic_validate
 import argparse
 import json
-import os, re
+import os
 from os.path import join, exists
 import pickle as pkl
 

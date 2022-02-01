@@ -84,7 +84,7 @@ class EVModel(nn.Module):
         # extract only relation type != 'OTHER' (valid relations)
         # from all the original pairs we keep only the actual ones
         # e.g. from 235 to 44
-        rpred_ids = (rpreds_ != self.params['voc_sizes']['rel_size'] - 1).nonzero().transpose(0, 1)[0]
+        rpred_ids = (rpreds_ != self.params['voc_sizes']['rel_size'] - 1).nonzero(as_tuple=False).transpose(0, 1)[0]
         rpred_ids = rpred_ids.to(cpu_device)  # list: contain indices of the valid relations
 
         return l2r, rpred_types, rpred_ids
@@ -1086,7 +1086,7 @@ class EVModel(nn.Module):
             ent_embeds = rel_preds['enttoks_type_embeds']
 
             # all the triggers in the corpus with corresponding sentence and entity id e.g (tensor(0), tensor(8))
-            tr_ids = (ner_preds['tr_ids'] == 1).nonzero().transpose(0, 1)
+            tr_ids = (ner_preds['tr_ids'] == 1).nonzero(as_tuple=False).transpose(0, 1)
             tr_ids = list(zip(tr_ids[0], tr_ids[1]))
 
             # l2r is pairs_idx

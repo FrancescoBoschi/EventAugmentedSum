@@ -29,11 +29,6 @@ class NestedNERModel(BertPreTrainedModel):
 
         self.bert = BertModel(config)
 
-        if params['freeze_bert']:
-            for name, param in self.bert.named_parameters():
-                if 'classifier' not in name:  # classifier layer
-                    param.requires_grad = False
-
         self.dropout = nn.Dropout(config.hidden_dropout_prob)
 
         # Classification layers on top of BERT

@@ -37,17 +37,10 @@ def config(config_file):
     parameters['predict'] = True
 
     # Set predict settings value for params
-    parameters['gpu'] = pred_params['gpu']
     parameters['batchsize'] = pred_params['batchsize']
-    if parameters['gpu'] >= 0 and torch.cuda.is_available():
-        device = torch.device("cuda:" + str(parameters['gpu']) if torch.cuda.is_available() else "cpu")
-        torch.cuda.set_device(parameters['gpu'])
-    else:
-        device = torch.device("cpu")
+    device = torch.device("cuda:" + str(parameters['gpu']) if torch.cuda.is_available() else "cpu")
 
     parameters['device'] = device
-    parameters['train_data'] = pred_params['train_data']
-    parameters['freeze_bert'] = pred_params['freeze_bert']
     parameters['compute_metrics'] = pred_params['compute_metrics']
     parameters['bert_model'] = pred_params['bert_model']
     parameters['bert_vocab'] = pred_params['bert_vocab']

@@ -52,7 +52,7 @@ class DeepEM(nn.Module):
         lbls = preds
 
         # all spans that are an entity ar a trigger
-        labeled_spans = (lbls > 0).nonzero().transpose(0, 1).long()
+        labeled_spans = (lbls > 0).nonzero(as_tuple=False).transpose(0, 1).long()
 
         ent_types = torch.full((lbls.shape[0], lbls.shape[1]), -1, dtype=torch.int64, device=self.device)
 

@@ -30,38 +30,40 @@ def data2network(data_struct, data_type, params):
         # input
         sentence_data = data_struct['input'][sid]
 
-        # document id
-        fid = sid.split(':')[0]
+        if len(sentence_data['sentence']) > 0:
 
-        # words to ids
-        word_ids = wordsIDs[xx]
-        words = org_sent_words[xx]
+            # document id
+            fid = sid.split(':')[0]
 
-        # entity
-        readable_e, idxs, ents, toks2, etypes2ids, entities, sw_sentence, sub_to_word, subwords, valid_starts, tagsIDs, terms = entity2network(
-            sentence_data, words, params, tokenizer)
+            # words to ids
+            word_ids = wordsIDs[xx]
+            words = org_sent_words[xx]
 
-        # return
-        sentence_vector = OrderedDict()
-        sentence_vector['fid'] = fid
-        sentence_vector['ents'] = ents
-        sentence_vector['word_ids'] = word_ids
-        sentence_vector['words'] = words
-        sentence_vector['offsets'] = sentence_data['offsets']
-        sentence_vector['e_ids'] = idxs
-        sentence_vector['tags'] = tagsIDs
-        sentence_vector['etypes2'] = etypes2ids
-        sentence_vector['toks2'] = toks2
-        sentence_vector['raw_words'] = sentence_data['words']
+            # entity
+            readable_e, idxs, ents, toks2, etypes2ids, entities, sw_sentence, sub_to_word, subwords, valid_starts, tagsIDs, terms = entity2network(
+                sentence_data, words, params, tokenizer)
 
-        sentence_vector['entities'] = entities
-        sentence_vector['sw_sentence'] = sw_sentence
-        sentence_vector['terms'] = terms
-        sentence_vector['sub_to_word'] = sub_to_word
-        sentence_vector['subwords'] = subwords
-        sentence_vector['valid_starts'] = valid_starts
+            # return
+            sentence_vector = OrderedDict()
+            sentence_vector['fid'] = fid
+            sentence_vector['ents'] = ents
+            sentence_vector['word_ids'] = word_ids
+            sentence_vector['words'] = words
+            sentence_vector['offsets'] = sentence_data['offsets']
+            sentence_vector['e_ids'] = idxs
+            sentence_vector['tags'] = tagsIDs
+            sentence_vector['etypes2'] = etypes2ids
+            sentence_vector['toks2'] = toks2
+            sentence_vector['raw_words'] = sentence_data['words']
 
-        all_sentences.append(sentence_vector)
+            sentence_vector['entities'] = entities
+            sentence_vector['sw_sentence'] = sw_sentence
+            sentence_vector['terms'] = terms
+            sentence_vector['sub_to_word'] = sub_to_word
+            sentence_vector['subwords'] = subwords
+            sentence_vector['valid_starts'] = valid_starts
+
+            all_sentences.append(sentence_vector)
 
     return all_sentences
 

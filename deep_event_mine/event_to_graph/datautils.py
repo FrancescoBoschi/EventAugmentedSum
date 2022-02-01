@@ -3,7 +3,7 @@
 from typing import List, Set, Tuple, Dict, Union
 import os
 from glob import glob
-import itertools
+
 
 class DataFile:
     def __init__(self, root, filename):
@@ -27,20 +27,15 @@ class DataFile:
     def __repr__(self):
         return self.path
 
+
 def data_files(dataset_root: str) -> List[DataFile]:
     def base_root_name(filename: str) -> str:
         return os.path.splitext(os.path.basename(filename))[0]
     def find_by_ext(ext: str) -> Set[str]:
         return set(map(base_root_name, glob(os.path.join(dataset_root, f'*.{ext}'))))
 
-    a1_files = find_by_ext('a1')
     a2_files = find_by_ext('a2')
-    intersection = a1_files | a2_files
-    union = a1_files & a2_files
-    diff = intersection - union
-    if len(diff) > 0:
-        print("WARNING: Some A1, A2 or TXT files are missing.\n" + ' '.join(diff))
-    return [DataFile(dataset_root, f) for f in union]
+    return [DataFile(dataset_root, f) for f in a2_files]
 
 
 class StandoffEntity:
@@ -71,8 +66,8 @@ class StandoffEvent:
 
 def load_document(doc):
 
-    with open(doc.a1) as a1_file, open(doc.a2) as a2_file:
-        annotations = list(itertools.chain(a1_file, a2_file))
+    with open(doc.a2) as a2_file:
+        annotations = list(a2_file)
 
     entities = {}
     events = {}
