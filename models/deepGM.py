@@ -151,13 +151,13 @@ class DeepGraphMine(nn.Module):
             ]
             print("4")
             ner_out, rel_out, ev_out = self.deepee_model(tensors, self.params)
-
+            print("4,5")
             ner_preds = ner_out['preds']
-
+            print("4,6")            
             ner_terms = ner_out['terms']
-
+            print("4,7") 
             all_ner_terms.append(ner_terms)
-
+            print("4,8") 
             for sentence_idx, ner_pred in enumerate(ner_preds):
                 print("5")
                 pred_entities = []
