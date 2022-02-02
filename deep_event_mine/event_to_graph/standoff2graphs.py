@@ -4,7 +4,7 @@ import pickle
 import os
 import networkx
 import argparse
-import datautils
+from . import datautils
 
 
 def base_root_name(filename: str) -> str:
