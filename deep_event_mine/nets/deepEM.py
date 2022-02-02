@@ -157,14 +157,14 @@ class DeepEM(nn.Module):
         return span_terms
 
     def calculate(self, batch_input):
-
+        print("1")
         # for output
         ner_out = {}
 
         # input
         nn_tokens, nn_ids, nn_token_mask, nn_attention_mask, nn_span_indices, nn_span_labels, nn_span_labels_match_rel, nn_entity_masks, nn_trigger_masks, span_terms, \
         etypes, max_span_labels = batch_input
-
+        print("2")
         # predict entity
         e_preds, e_golds, sentence_sections, span_masks, embeddings, sentence_emb, trigger_indices, _, _ = self.NER_layer(
             all_tokens=nn_tokens,
@@ -175,22 +175,22 @@ class DeepEM(nn.Module):
             all_trigger_masks=nn_trigger_masks,
             all_span_labels=nn_span_labels,
         )
-
+        print("3")
         # run on CPU
         sentence_sections = sentence_sections.detach().cpu().numpy()[:-1]
         all_span_masks = span_masks.detach() > 0
-
+        print("4")
         # Embedding of each span
         embeddings = torch.split(embeddings, torch.sum(all_span_masks, dim=-1).tolist())
-
+        print("5")
         # Pred of each span
         e_preds = np.split(e_preds.astype(int), sentence_sections)
         e_preds = [pred.flatten() for pred in e_preds]
         ner_out['preds'] = e_preds
-
+        print("6")
         e_golds = np.split(e_golds.astype(int), sentence_sections)
         e_golds = [gold.flatten() for gold in e_golds]
-
+        print("7")
         # Note:
         # The gold entities refer to manually id-labeled text spans within the dataset
         # (e.g., cg). For each text span, we have a boolean array of X features where X
@@ -235,7 +235,7 @@ class DeepEM(nn.Module):
                         span_terms[sentence_idx].id2term[pred_idx] = term
                         span_terms[sentence_idx].term2id[term] = pred_idx
                         trigger_idx += 1
-
+            print("8")
             self.trigger_id = trigger_idx
 
         # given gold entity, predict trigger only
@@ -308,6 +308,7 @@ class DeepEM(nn.Module):
                             del span_terms[sentence_idx].term2id[span_term]
 
                 span_preds[span_preds == 255] = 0
+            print("9")
             self.trigger_id = trigger_idx
 
         # what is the maximum number of spans in a sentence
@@ -1095,7 +1096,7 @@ class DeepEM(nn.Module):
         return actual_role_labels_lr, actual_role_labels_rl
 
     def forward(self, batch_input, params):
-
+        print("Start from deepEM")
         ner_preds, rel_preds, ev_preds = self.calculate(batch_input)
 
         return ner_preds, rel_preds, ev_preds
