@@ -22,6 +22,7 @@ class DeepGraphMine(nn.Module):
 
         self.pred_params, self.params = configdem.config(config_file)
         self.device = self.params['device']
+        print(self.device)
         self.deepee_model = deepEM.DeepEM(self.params)
 
         # load pretrained weights
