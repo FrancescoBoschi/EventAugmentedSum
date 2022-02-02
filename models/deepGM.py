@@ -18,10 +18,10 @@ from deep_event_mine.loader.prepData import prepdata
 
 class DeepGraphMine(nn.Module):
     def __init__(self, config_file):
-        super().__init__()
-        self.params['device'] = "cuda:0"
+        super().__init__()       
         self.pred_params, self.params = configdem.config(config_file)
-        self.device = self.params['device']
+        self.device = "cuda:0"
+        self.params['device'] = "cuda:0"
         self.deepee_model = deepEM.DeepEM(self.params)
 
         # load pretrained weights
