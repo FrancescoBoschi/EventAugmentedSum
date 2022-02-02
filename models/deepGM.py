@@ -20,8 +20,8 @@ class DeepGraphMine(nn.Module):
     def __init__(self, config_file):
         super().__init__()       
         self.pred_params, self.params = configdem.config(config_file)
-        self.device = "cuda:0"
-        self.params['device'] = "cuda:0"
+        self.device = "cpu"
+        self.params['device'] = "cpu"
         self.deepee_model = deepEM.DeepEM(self.params)
 
         # load pretrained weights
