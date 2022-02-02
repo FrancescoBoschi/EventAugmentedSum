@@ -67,7 +67,7 @@ class NestedNERModel(BertPreTrainedModel):
         #                ...
         #                [0, 1, 1, ..., 0, 0, 0]], dtype=torch.uint8)
         #   shape: (number of batches, batch_size), e.g. (16, 66)
-
+        print(device)
         device = all_ids.device
         max_span_width = self.max_span_width
 
