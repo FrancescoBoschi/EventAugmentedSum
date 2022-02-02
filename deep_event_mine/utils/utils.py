@@ -305,13 +305,13 @@ def handle_checkpoints(
 
         if isinstance(resume, dict):
             for previous_checkpoint_file in checkpoint_files:
-                previous_checkpoint = torch.load(previous_checkpoint_file, map_location= 'cpu')
+                previous_checkpoint = torch.load(previous_checkpoint_file, map_location=params['device'])
                 previous_params = previous_checkpoint["params"]
                 if all(previous_params[k] == v for k, v in resume.items()):
                     last_checkpoint = previous_checkpoint
         else:
             # Load the last checkpoint for comparison
-            last_checkpoint = torch.load(checkpoint_files[0], map_location= 'cpu')
+            last_checkpoint = torch.load(checkpoint_files[0], map_location=params['device'])
 
         print(checkpoint_files[0])
 
@@ -356,7 +356,7 @@ def handle_checkpoints(
         # Now, we can define filter_func to save the best model
         if filter_func and len(checkpoint_files):
             # Load the last checkpoint for comparison
-            last_checkpoint = torch.load(checkpoint_files[0], map_location= 'cpu')
+            last_checkpoint = torch.load(checkpoint_files[0], map_location=params['device'])
 
             if timestamp <= last_checkpoint["timestamp"] or filter_func(
                     params, last_checkpoint["params"]
