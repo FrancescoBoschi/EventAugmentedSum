@@ -234,16 +234,18 @@ class DeepGraphMine(nn.Module):
             return all_ner_terms, all_ent_embs, fidss, None
 
     def forward(self, sentences):
-
+        print("Processing train data")
         train_data = prepdata.prep_input_data(None, self.params, sentences0=sentences)
+        print("Processing nntrain data")
         nntrain_data, train_dataloader = configdem.read_test_data(train_data, self.params)
         nntrain_data['g_entity_ids_'] = train_data['g_entity_ids_']
-
+        print("Processing terms, embs, fidss and feid")
         all_ner_terms, all_ent_embs, fidss, feid_mapping = self.generate_events(nntrain_data, train_dataloader)
 
         if feid_mapping is not None:
+            print("Processing output")
             batch_nodes_vec, batch_adjs, nodes_num = self.embeddings_for_entities(all_ner_terms, all_ent_embs, fidss, feid_mapping)
-
+            print("Returning output")
             return batch_nodes_vec, batch_adjs, nodes_num
 
         else:
