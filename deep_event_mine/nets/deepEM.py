@@ -310,7 +310,7 @@ class DeepEM(nn.Module):
                 span_preds[span_preds == 255] = 0
             print("9")
             self.trigger_id = trigger_idx
-
+        print("10")
         # what is the maximum number of spans in a sentence
         # multiplied by two given the fact that we have 2 labels for each span
         # e.g 1694
@@ -319,24 +319,28 @@ class DeepEM(nn.Module):
         # for each sentence we get a num_padding vector if the original
         # vectors are shorter we pad them with -1
         # (batch_size, num_padding) e.g (16, 1694)
+        print("11")
         e_preds = [np.pad(pred, (0, num_padding - pred.shape[0]),
                           'constant', constant_values=-1) for pred in e_preds]
+        print("12")
         e_golds = [np.pad(gold, (0, num_padding - gold.shape[0]),
                           'constant', constant_values=-1) for gold in e_golds]
-
+        print("13")
         e_preds = torch.tensor(e_preds, device=self.device)
-
+        print("14")
         # pad each embedding to max number of spans in a sentence in batch
         embeddings = [f.pad(embedding, (0, 0, 0, max_span_labels - embedding.shape[0]),
                             'constant', value=0) for embedding in embeddings]
-
+        print("15")
         embeddings = torch.stack(embeddings)
+        print("16")
         embeddings = embeddings.unsqueeze(dim=2).expand(-1, -1, self.params["ner_label_limit"], -1)
 
         # we have 2304-dimensional embedding for each span in a sentence. the number of spans is
         # max_number_of_spans in a sentence * 2 because each span can be labeled as 2 different entities
         # like "transformed" in the paper example
         # (batch_size, num_padding, embedding_size) e.g (16, 1694, 2304)
+        print("17")
         embeddings = embeddings.reshape(embeddings.size(0), -1, embeddings.size(-1))
 
         # len(pairs_idx[1])  indicates the number of pairs
@@ -350,36 +354,44 @@ class DeepEM(nn.Module):
         # n_e_i = number of entities/triggers in sentence corresponding to the i-th trigger excluding the i-th trigger to avoid self-relation
         # ent_embeds is the vector of embeddings for each span, if the span is a non-entity it's going to have all zeros
         # tr_embeds is the vector of embeddings for each span, if the span is not a trigger it's going to have all zeros
+        print("18")
         ent_embeds, tr_embeds, ent_types, tr_ids, pairs_idx = self.generate_entity_pairs_4rel(
             embeddings,
             preds=e_preds
         )
-
+        print("19")
         ner_preds = {'preds': e_preds, 'golds': e_golds, 'embeddings': embeddings,
                      'ent_embeds': ent_embeds, 'tr_embeds': tr_embeds, 'tr_ids': tr_ids,
                      'ent_types': ent_types, 'pairs_idx': pairs_idx, 'e_types': etypes.long(),
                      'sentence_embeds': sentence_emb}
 
         # Role layer
+        print("20")
         rel_preds = self.REL_layer(ner_preds)
-
+        print("21")
         # if there are trigger-entity or trigger-trigger proceed
         if rel_preds['next']:
-
+            print("22")
             ev_preds, empty_pred, _ = self.EV_layer(ner_preds, rel_preds)
-
+            print("23")
             if empty_pred == True:
+                print("24")
                 ev_preds = None
+                print("25")
 
         else:
+            print("26")
             ev_preds = None
+            print("27")
 
+        print("28")
         ner_out['terms'] = span_terms
         ner_out['span_indices'] = nn_span_indices
+        print("29")
 
         nner_preds = e_preds.detach().cpu().numpy()
         ner_out['nner_preds'] = nner_preds
-
+        print("30")
         return ner_out, rel_preds, ev_preds
 
     def forward_train(self, eval_data, eval_data_ids, all_ann_info, balance_ent=False):

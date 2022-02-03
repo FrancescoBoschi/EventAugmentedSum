@@ -47,24 +47,24 @@ class EVModel(nn.Module):
         self.ev_struct_generator = EV_Generator(params)
 
         # relation type embeddings
-        self.rtype_layer = nn.Embedding(num_embeddings=sizes['rel_size'] + 1, embedding_dim=params['rtype_dim'])
+        self.rtype_layer = nn.Embedding(num_embeddings=sizes['rel_size'] + 1, embedding_dim=params['rtype_dim']).to("cuda:0")
 
         # IN argument embeddings: argument IN structure
-        self.in_arg_layer = nn.Linear(in_features=rel_dim, out_features=params['role_dim'], bias=False)
+        self.in_arg_layer = nn.Linear(in_features=rel_dim, out_features=params['role_dim'], bias=False).to("cuda:0")
 
         # OUT argument embeddings: argument NOT IN structure
-        self.out_arg_layer = nn.Linear(in_features=rel_dim, out_features=params['role_dim'], bias=False)
+        self.out_arg_layer = nn.Linear(in_features=rel_dim, out_features=params['role_dim'], bias=False).to("cuda:0")
 
         # for event classification
-        self.hidden_layer1 = nn.Linear(in_features=ev_dim, out_features=params['hidden_dim'])
-        self.hidden_layer2 = nn.Linear(in_features=params['hidden_dim'], out_features=params['ev_reduced_size'])
-        self.l_class = nn.Linear(in_features=params['ev_reduced_size'], out_features=1)
+        self.hidden_layer1 = nn.Linear(in_features=ev_dim, out_features=params['hidden_dim']).to("cuda:0")
+        self.hidden_layer2 = nn.Linear(in_features=params['hidden_dim'], out_features=params['ev_reduced_size']).to("cuda:0")
+        self.l_class = nn.Linear(in_features=params['ev_reduced_size'], out_features=1).to("cuda:0")
 
         # reduce event embeds to replace entity
-        self.ev2ent_reduce = nn.Linear(in_features=params['ev_reduced_size'], out_features=ent_dim)
+        self.ev2ent_reduce = nn.Linear(in_features=params['ev_reduced_size'], out_features=ent_dim).to("cuda:0")
 
         # predict modality
-        self.modality_layer = nn.Linear(in_features=params['ev_reduced_size'], out_features=sizes['ev_size'])
+        self.modality_layer = nn.Linear(in_features=params['ev_reduced_size'], out_features=sizes['ev_size']).to("cuda:0")
 
         # others
         self.device = params['device']
@@ -1061,6 +1061,7 @@ class EVModel(nn.Module):
         return pred_ev_output, empty_pred, loss_EV_layer
 
     def forward(self, ner_preds, rel_preds):
+        print("In Evnet")
         """Forward.
             Given entities and relations, event structures, return event prediction.
         """

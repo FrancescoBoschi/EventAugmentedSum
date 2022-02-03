@@ -22,7 +22,7 @@ class RELModel(nn.Module):
         # 58 is the index relating to the ignore label
         self.type_embed = nn.Embedding(num_embeddings=sizes['etype_size'] + 1,
                                        embedding_dim=params['etype_dim'],
-                                       padding_idx=sizes['etype_size'])
+                                       padding_idx=sizes['etype_size']).to("cuda:0")
 
         # e.g. 768*3 + 300 = 2604
         ent_dim = params['bert_dim'] * 3 + params['etype_dim']  
@@ -30,15 +30,15 @@ class RELModel(nn.Module):
         # takes as input the [v_t;v_a;c] vectors of length e.g 5976 = (768 + 2604*2)
         # the output dimension for each vector is params['hidden_dim'] e.g 1000
         self.hidden_layer1 = nn.Linear(in_features=2 * ent_dim + params['bert_dim'],
-                                       out_features=params['hidden_dim'], bias=False)
+                                       out_features=params['hidden_dim'], bias=False).to("cuda:0")
         # e.g. from 1000 to 500
         self.hidden_layer2 = nn.Linear(in_features=params['hidden_dim'],
-                                       out_features=params['rel_reduced_size'], bias=False)
+                                       out_features=params['rel_reduced_size'], bias=False).to("cuda:0")
 
         # takes as input all the r_i vectors and computes the logits for classification
         # e.g from 500 to 19 that it's the number of all roles + the non-role label
         self.l_class = nn.Linear(in_features=params['rel_reduced_size'],
-                                 out_features=sizes['rel_size'])
+                                 out_features=sizes['rel_size']).to("cuda:0")
 
         self.cel = nn.CrossEntropyLoss()
 
@@ -236,6 +236,7 @@ class RELModel(nn.Module):
         return forw_comp_res, enttoks_type_embeds
 
     def forward(self, batch_input, warm_up=False, balance_data=False):
+        print("In RELNET")
         if len(batch_input['pairs_idx']) > 0:
 
             if self.params['compute_dem_loss']:

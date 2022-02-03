@@ -241,13 +241,9 @@ except ImportError:
             self.variance_epsilon = eps
 
         def forward(self, x):
-            print("Ugo")
             u = x.mean(-1, keepdim=True)
-            print("Gino")
             s = (x - u).pow(2).mean(-1, keepdim=True)
-            print("Speps")
             x = (x - u) / torch.sqrt(s + self.variance_epsilon)
-            print("sngng")
             return self.weight * x + self.bias
 
 
@@ -287,6 +283,7 @@ class BertEmbeddings(nn.Module):
         embeddings = self.LayerNorm(embeddings)
         print("7")
         embeddings = self.dropout(embeddings)
+        print("Fine bert embeddings")
         return embeddings
 
 
@@ -414,18 +411,15 @@ class BertEncoder(nn.Module):
     def __init__(self, config):
         super(BertEncoder, self).__init__()
         layer = BertLayer(config)
-        self.layer = nn.ModuleList([copy.deepcopy(layer) for _ in range(config.num_hidden_layers)])
+        self.layer = nn.ModuleList([copy.deepcopy(layer).to("cuda:0") for _ in range(config.num_hidden_layers)])
 
     def forward(self, hidden_states, attention_mask, output_all_encoded_layers=True):
-        print("BesrEncoder")
         all_encoder_layers = []
         for layer_module in self.layer:
-            print("1")
-            hidden_states = layer_module(hidden_states, attention_mask)
+            hidden_states = layer_module(hidden_states, attention_mask).to("cuda:0")
             if output_all_encoded_layers:
                 all_encoder_layers.append(hidden_states)
         if not output_all_encoded_layers:
-            print("2")
             all_encoder_layers.append(hidden_states)
         return all_encoder_layers
 
@@ -433,15 +427,19 @@ class BertEncoder(nn.Module):
 class BertPooler(nn.Module):
     def __init__(self, config):
         super(BertPooler, self).__init__()
-        self.dense = nn.Linear(config.hidden_size, config.hidden_size)
+        self.dense = nn.Linear(config.hidden_size, config.hidden_size).to("cuda:0")
         self.activation = nn.Tanh()
 
     def forward(self, hidden_states):
+        print("Bert Pooler")
         # We "pool" the model by simply taking the hidden state corresponding
         # to the first token.
         first_token_tensor = hidden_states[:, 0]
-        pooled_output = self.dense(first_token_tensor)
-        pooled_output = self.activation(pooled_output)
+        print("1")
+        pooled_output = self.dense(first_token_tensor).to("cuda:0")
+        print("2")
+        pooled_output = self.activation(pooled_output).to("cuda:0")
+        print("Fine Bert Pooler")
         return pooled_output
 
 
@@ -751,8 +749,12 @@ class BertModel(BertPreTrainedModel):
         sequence_output = encoded_layers[-1]
         print("6")
         pooled_output = self.pooler(sequence_output)
+        print("7")
         if not output_all_encoded_layers:
+            print("8")
             encoded_layers = encoded_layers[-1]
+            print("9")
+        print("FINE BERT")
         return encoded_layers, pooled_output
 
 
