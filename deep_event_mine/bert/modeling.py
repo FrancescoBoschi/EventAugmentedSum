@@ -422,15 +422,14 @@ class BertPooler(nn.Module):
         self.activation = nn.Tanh()
 
     def forward(self, hidden_states):
-        print("Bert Pooler")
+
         # We "pool" the model by simply taking the hidden state corresponding
         # to the first token.
         first_token_tensor = hidden_states[:, 0]
-        print("1")
+
         pooled_output = self.dense(first_token_tensor).to("cuda:0")
-        print("2")
+  
         pooled_output = self.activation(pooled_output).to("cuda:0")
-        print("Fine Bert Pooler")
         return pooled_output
 
 
@@ -714,7 +713,7 @@ class BertModel(BertPreTrainedModel):
             attention_mask = torch.ones_like(input_ids)
         if token_type_ids is None:
             token_type_ids = torch.zeros_like(input_ids)
-        print("1")
+ 
         # We create a 3D attention mask from a 2D tensor mask.
         # Sizes are [batch_size, 1, 1, to_seq_length]
         # So we can broadcast to [batch_size, num_heads, from_seq_length, to_seq_length]
@@ -728,24 +727,22 @@ class BertModel(BertPreTrainedModel):
         # Since we are adding it to the raw scores before the softmax, this is
         # effectively the same as removing these entirely.
         extended_attention_mask = extended_attention_mask.to(dtype=next(self.parameters()).dtype)  # fp16 compatibility
-        print("2")
+
         extended_attention_mask = (1.0 - extended_attention_mask) * -10000.0
-        print("3")
+
         embedding_output = self.embeddings(input_ids, token_type_ids)
-        print("4")
+   
         encoded_layers = self.encoder(embedding_output,
                                       extended_attention_mask,
                                       output_all_encoded_layers=output_all_encoded_layers)
-        print("5")
+ 
         sequence_output = encoded_layers[-1]
-        print("6")
+
         pooled_output = self.pooler(sequence_output)
-        print("7")
+
         if not output_all_encoded_layers:
-            print("8")
             encoded_layers = encoded_layers[-1]
-            print("9")
-        print("FINE BERT")
+
         return encoded_layers, pooled_output
 
 

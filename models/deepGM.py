@@ -110,7 +110,7 @@ class DeepGraphMine(nn.Module):
         return batch_nodes_vec, batch_adjs, nodes_num
 
     def generate_events(self, nntrain_data, train_dataloader):
-        print("1")
+        
         # store predicted entities
         ent_preds = []
 
@@ -122,12 +122,12 @@ class DeepGraphMine(nn.Module):
 
         # entity and relation output
         ent_anns = []
-        print("2")
+        
         is_eval_ev = False
         for batch in tqdm(train_dataloader):
             eval_data_ids = batch
             tensors = utils.get_tensors(eval_data_ids, nntrain_data, self.params)
-            print("3")
+            
             nn_tokens, nn_ids, nn_token_mask, nn_attention_mask, nn_span_indices, nn_span_labels, nn_span_labels_match_rel, nn_entity_masks, nn_trigger_masks, _, \
             etypes, _ = tensors
 
@@ -149,17 +149,17 @@ class DeepGraphMine(nn.Module):
                 nntrain_data["subwords"][data_id]
                 for data_id in eval_data_ids[0].tolist()
             ]
-            print("4")
+            
             ner_out, rel_out, ev_out = self.deepee_model(tensors, self.params)
-            print("4,5")
+           
             ner_preds = ner_out['preds']
-            print("4,6")            
+                      
             ner_terms = ner_out['terms']
-            print("4,7") 
+             
             all_ner_terms.append(ner_terms)
-            print("4,8") 
+            
             for sentence_idx, ner_pred in enumerate(ner_preds):
-                print("5")
+                
                 pred_entities = []
                 for span_id, ner_pred_id in enumerate(ner_pred):
                     span_start, span_end = nn_span_indices[sentence_idx][span_id]
@@ -194,7 +194,7 @@ class DeepGraphMine(nn.Module):
                 all_ent_embs.append(rel_out['enttoks_type_embeds'])
             else:
                 all_ent_embs.append([])
-            print("6")
+            
             # event prediction
             if ev_out is not None:
                 # add predicted entity
@@ -215,7 +215,7 @@ class DeepGraphMine(nn.Module):
                 ev_preds.append([])
 
                 span_indicess.append([])
-        print("7")
+        
         if is_eval_ev > 0:
             feid_mapping = write_events(fids=fidss,
                                         all_ent_preds=ent_preds,
