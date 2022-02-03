@@ -236,14 +236,18 @@ except ImportError:
             """Construct a layernorm module in the TF style (epsilon inside the square root).
             """
             super(BertLayerNorm, self).__init__()
-            self.weight = nn.Parameter(torch.ones(hidden_size))
-            self.bias = nn.Parameter(torch.zeros(hidden_size))
+            self.weight = nn.Parameter(torch.ones(hidden_size).cuda())
+            self.bias = nn.Parameter(torch.zeros(hidden_size).cuda())
             self.variance_epsilon = eps
 
         def forward(self, x):
+            print("Ugo")
             u = x.mean(-1, keepdim=True)
+            print("Gino")
             s = (x - u).pow(2).mean(-1, keepdim=True)
+            print("Speps")
             x = (x - u) / torch.sqrt(s + self.variance_epsilon)
+            print("sngng")
             return self.weight * x + self.bias
 
 
@@ -253,28 +257,35 @@ class BertEmbeddings(nn.Module):
 
     def __init__(self, config):
         super(BertEmbeddings, self).__init__()
-        self.word_embeddings = nn.Embedding(config.vocab_size, config.hidden_size, padding_idx=0)
-        self.position_embeddings = nn.Embedding(config.max_position_embeddings, config.hidden_size)
-        self.token_type_embeddings = nn.Embedding(config.type_vocab_size, config.hidden_size)
-
+        self.word_embeddings = nn.Embedding(config.vocab_size, config.hidden_size, padding_idx=0, device="cuda:0")
+        self.position_embeddings = nn.Embedding(config.max_position_embeddings, config.hidden_size,  device="cuda:0")
+        self.token_type_embeddings = nn.Embedding(config.type_vocab_size, config.hidden_size, device="cuda:0")
         # self.LayerNorm is not snake-cased to stick with TensorFlow model variable name and be able to load
         # any TensorFlow checkpoint file
         self.LayerNorm = BertLayerNorm(config.hidden_size, eps=1e-12)
         self.dropout = nn.Dropout(config.hidden_dropout_prob)
 
     def forward(self, input_ids, token_type_ids=None):
+        print("BERT EMBEDDINGS")
         seq_length = input_ids.size(1)
+        self.device = input_ids.device
         position_ids = torch.arange(seq_length, dtype=torch.long, device=input_ids.device)
+        print("1")
         position_ids = position_ids.unsqueeze(0).expand_as(input_ids)
+        print("2")
         if token_type_ids is None:
             token_type_ids = torch.zeros_like(input_ids)
-
+        print("3")
         words_embeddings = self.word_embeddings(input_ids)
+        print("4")
         position_embeddings = self.position_embeddings(position_ids)
+        print("5")
         token_type_embeddings = self.token_type_embeddings(token_type_ids)
 
         embeddings = words_embeddings + position_embeddings + token_type_embeddings
+        print("6")
         embeddings = self.LayerNorm(embeddings)
+        print("7")
         embeddings = self.dropout(embeddings)
         return embeddings
 
@@ -406,12 +417,15 @@ class BertEncoder(nn.Module):
         self.layer = nn.ModuleList([copy.deepcopy(layer) for _ in range(config.num_hidden_layers)])
 
     def forward(self, hidden_states, attention_mask, output_all_encoded_layers=True):
+        print("BesrEncoder")
         all_encoder_layers = []
         for layer_module in self.layer:
+            print("1")
             hidden_states = layer_module(hidden_states, attention_mask)
             if output_all_encoded_layers:
                 all_encoder_layers.append(hidden_states)
         if not output_all_encoded_layers:
+            print("2")
             all_encoder_layers.append(hidden_states)
         return all_encoder_layers
 
@@ -706,11 +720,12 @@ class BertModel(BertPreTrainedModel):
         self.apply(self.init_bert_weights)
 
     def forward(self, input_ids, token_type_ids=None, attention_mask=None, output_all_encoded_layers=True):
+        print("BERT")
         if attention_mask is None:
             attention_mask = torch.ones_like(input_ids)
         if token_type_ids is None:
             token_type_ids = torch.zeros_like(input_ids)
-
+        print("1")
         # We create a 3D attention mask from a 2D tensor mask.
         # Sizes are [batch_size, 1, 1, to_seq_length]
         # So we can broadcast to [batch_size, num_heads, from_seq_length, to_seq_length]
@@ -724,13 +739,17 @@ class BertModel(BertPreTrainedModel):
         # Since we are adding it to the raw scores before the softmax, this is
         # effectively the same as removing these entirely.
         extended_attention_mask = extended_attention_mask.to(dtype=next(self.parameters()).dtype)  # fp16 compatibility
+        print("2")
         extended_attention_mask = (1.0 - extended_attention_mask) * -10000.0
-
+        print("3")
         embedding_output = self.embeddings(input_ids, token_type_ids)
+        print("4")
         encoded_layers = self.encoder(embedding_output,
                                       extended_attention_mask,
                                       output_all_encoded_layers=output_all_encoded_layers)
+        print("5")
         sequence_output = encoded_layers[-1]
+        print("6")
         pooled_output = self.pooler(sequence_output)
         if not output_all_encoded_layers:
             encoded_layers = encoded_layers[-1]
