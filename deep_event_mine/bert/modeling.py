@@ -262,28 +262,19 @@ class BertEmbeddings(nn.Module):
         self.dropout = nn.Dropout(config.hidden_dropout_prob)
 
     def forward(self, input_ids, token_type_ids=None):
-        print("BERT EMBEDDINGS")
         seq_length = input_ids.size(1)
         self.device = input_ids.device
         position_ids = torch.arange(seq_length, dtype=torch.long, device=input_ids.device)
-        print("1")
         position_ids = position_ids.unsqueeze(0).expand_as(input_ids)
-        print("2")
         if token_type_ids is None:
             token_type_ids = torch.zeros_like(input_ids)
-        print("3")
         words_embeddings = self.word_embeddings(input_ids)
-        print("4")
         position_embeddings = self.position_embeddings(position_ids)
-        print("5")
         token_type_embeddings = self.token_type_embeddings(token_type_ids)
 
         embeddings = words_embeddings + position_embeddings + token_type_embeddings
-        print("6")
         embeddings = self.LayerNorm(embeddings)
-        print("7")
         embeddings = self.dropout(embeddings)
-        print("Fine bert embeddings")
         return embeddings
 
 
